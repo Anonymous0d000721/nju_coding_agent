@@ -79,6 +79,14 @@ export async function runPrompt(config: AgentConfig, prompt: string, sessionId?:
   const sessionStore = config.session.enabled ? new JsonlSessionStore(`${config.workspaceRoot}/.nju-agent`) : undefined;
   const telemetry = new TelemetryStore(`${config.workspaceRoot}/.nju-agent/logs/events.jsonl`, config.telemetry, config.model.apiKey ? [config.model.apiKey] : []);
   const runId = randomUUID();
+  const hooks = new HookRegistry();
+  hooks.register({
+    beforeModelRequest: async ({ turn }) => { await telemetry.append({ type: 'model_request_start', runId, data: { turn } }); },
+    beforeTool: async ({ turn, toolCall }) => { await telemetry.append({ type: 'tool_call_start', runId, data: { turn, toolName: toolCall?.name } }); },
+    afterTool: async ({ turn, toolResult }) => { await telemetry.append({ type: 'tool_result', runId, data: { turn, toolName: toolResult?.toolName, ok: toolResult?.ok, elapsedMs: toolResult?.elapsedMs, truncated: toolResult?.truncated } }); },
+    afterTurn: async ({ turn }) => { await telemetry.append({ type: 'turn_end', runId, data: { turn } }); },
+    onStop: async ({ result }) => { await telemetry.append({ type: 'runner_stop', runId, data: { stopReason: result.stopReason, turns: result.turns, toolCalls: result.toolCalls } }); },
+  });
   const skillRegistry = new SkillRegistry();
   const trusted = config.trustOverride === true;
   const skills = skillRegistry.scan(config.workspaceRoot, trusted);
@@ -107,7 +115,7 @@ export async function runPrompt(config: AgentConfig, prompt: string, sessionId?:
     tools: new ToolExecutor(registry, { workspaceRoot: config.workspaceRoot, permissionMode: config.permissionMode }),
     systemPrompt: buildSystemPrompt(config.workspaceRoot, { instructions, skillCatalog: skillRegistry.catalog() }),
     toolDefinitions: registry.definitionsForModel(),
-    hooks: new HookRegistry(),
+    hooks,
     onMessage: session && sessionStore ? async (message) => { await sessionStore.append(session.id, createMessageEntry(session.id, message)); } : undefined,
   });
   try {
