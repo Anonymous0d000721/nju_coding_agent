@@ -3,12 +3,14 @@ import path from 'node:path';
 import type { ApiFormat, CliArgs } from '../app/cli-args.js';
 import type { ThinkingConfig, ThinkingLevel, ThinkingLevelMap } from '../model/model-client.js';
 import { clampThinkingLevel } from '../model/thinking.js';
+import { ProjectTrustStore } from './trust.js';
 
 export interface AgentConfig {
   workspaceRoot: string;
   permissionMode: 'yolo' | 'strict' | 'confirm';
   telemetry: 'off' | 'normal' | 'debug';
   trustOverride?: boolean;
+  projectTrusted: boolean;
   model: { apiKey?: string; baseUrl: string; model: string; apiFormat: ApiFormat; thinking: ThinkingConfig };
   session: { enabled: boolean; id?: string };
   mcpServers: Array<{ name: string; command: string; args?: string[]; cwd?: string; env?: Record<string, string> }>;
@@ -20,11 +22,13 @@ export function loadConfig(input: { env: NodeJS.ProcessEnv; args: CliArgs; cwd: 
   const envValue = (name: string): string | undefined => input.env[name] ?? localEnv[name];
   const thinkingMap = parseThinkingMap(envValue('NJU_AGENT_THINKING_LEVEL_MAP'));
   const requestedLevel = parseThinkingLevel(envValue('NJU_AGENT_THINKING_LEVEL'));
+  const projectTrusted = input.args.approve === true || (input.args.approve !== false && new ProjectTrustStore().isTrusted(workspaceRoot));
   return {
     workspaceRoot,
     permissionMode: input.args.permissionMode,
     telemetry: input.args.telemetry,
     trustOverride: input.args.approve,
+    projectTrusted,
     model: {
       apiKey: envValue(input.args.apiKeyEnv),
       baseUrl: input.args.baseUrl ?? envValue('NJU_AGENT_BASE_URL') ?? 'https://api.openai.com/v1',

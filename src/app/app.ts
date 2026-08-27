@@ -90,7 +90,7 @@ export async function runPrompt(config: AgentConfig, prompt: string, sessionId?:
     onStop: async ({ result }) => { await telemetry.append({ type: 'runner_stop', runId, data: { stopReason: result.stopReason, turns: result.turns, toolCalls: result.toolCalls } }); },
   });
   const skillRegistry = new SkillRegistry();
-  const trusted = config.trustOverride === true;
+  const trusted = config.projectTrusted;
   const skills = skillRegistry.scan(config.workspaceRoot, trusted);
   if (trusted && skills.length > 0) registry.register(skillRegistry.createLoadTool());
   const instructions = loadProjectInstructions(config.workspaceRoot, trusted)

@@ -7,6 +7,7 @@ import { clampThinkingLevel } from '../model/thinking.js';
 import { createSessionNameEntry, createThinkingLevelChangeEntry } from '../session/entries.js';
 import { JsonlSessionStore } from '../session/jsonl-store.js';
 import type { AgentConfig } from '../shared/config.js';
+import { ProjectTrustStore } from '../shared/trust.js';
 import { renderHelp } from './renderer.js';
 import { backspace, createEditorState, deleteForward, graphemeBoundaries, insertPaste, insertText, moveDown, moveLeft, moveRight, moveUp, parseBracketedPaste, slashCompletions, submitEditor, type EditorState } from './editor-state.js';
 import type { SessionEntry } from '../session/session-types.js';
@@ -24,7 +25,7 @@ export type TuiMessage =
 
 export const TUI_COMMANDS = [
   { name: '/help', description: 'show help' }, { name: '/session', description: 'show current session' },
-  { name: '/new', description: 'start a new session' }, { name: '/fork', description: 'fork current session' }, { name: '/name', description: 'name current session' }, { name: '/sessions', description: 'list sessions' },
+  { name: '/new', description: 'start a new session' }, { name: '/fork', description: 'fork current session' }, { name: '/trust', description: 'trust this workspace' }, { name: '/name', description: 'name current session' }, { name: '/sessions', description: 'list sessions' },
   { name: '/resume', description: 'select a session' }, { name: '/model', description: 'select a model' },
   { name: '/effort', description: 'select reasoning effort' }, { name: '/reasoning', description: 'toggle reasoning display' },
   { name: '/thinking', description: 'alias for /reasoning' }, { name: '/compact', description: 'compaction status' },
@@ -257,6 +258,7 @@ function appendToLast(messages: TuiMessage[], role: 'assistant' | 'thinking', de
 interface CommandContext { app: ReturnType<typeof useApp>; config: AgentConfig; sessionId?: string; setSessionId: (value: string | undefined) => void; showReasoning: boolean; setShowReasoning: (value: boolean) => void; openPicker: (kind: PickerKind) => Promise<void>; appendSystem: (text: string) => void; appendError: (text: string) => void; persistEffort: (level: ThinkingLevel, targetSessionId?: string) => Promise<void>; setModel: (model: string) => void; resumeSession: (sessionId?: string) => Promise<void>; }
 async function handleCommand(line: string, ctx: CommandContext): Promise<void> {
   if (line === '/quit' || line === '/exit') { ctx.app.exit(); return; } if (line === '/help') { ctx.appendSystem(renderHelp().trim()); return; } if (line === '/new') { ctx.setSessionId(undefined); ctx.appendSystem('Started a new session.'); return; }
+  if (line === '/trust') { new ProjectTrustStore().trust(ctx.config.workspaceRoot); ctx.config.projectTrusted = true; ctx.appendSystem('Workspace trusted for future runs.'); return; }
   if (line === '/fork') { if (!ctx.sessionId) { ctx.appendError('Start a session before forking it.'); return; } try { const child = await new JsonlSessionStore(`${ctx.config.workspaceRoot}/.nju-agent`).fork(ctx.sessionId); await ctx.resumeSession(child.id); } catch (error) { ctx.appendError(`Could not fork session: ${asMessage(error)}`); } return; }
   if (line === '/session') { const named = ctx.sessionId && ctx.config.session.enabled ? (await new JsonlSessionStore(`${ctx.config.workspaceRoot}/.nju-agent`).list()).find((item) => item.id === ctx.sessionId)?.name : undefined; ctx.appendSystem(`session: ${ctx.sessionId ?? '(new)'}${named ? `\nname: ${named}` : ''}\nmodel: ${ctx.config.model.model}\neffort: ${ctx.config.model.thinking.level}\nreasoning display: ${ctx.showReasoning ? 'on' : 'off'}\npermission: ${ctx.config.permissionMode}`); return; }
   if (line === '/name' || line.startsWith('/name ')) { const name = line.slice(5).trim(); if (!ctx.sessionId) { ctx.appendError('Start a session before naming it.'); return; } if (!name) { ctx.appendError('Usage: /name <name>'); return; } await new JsonlSessionStore(`${ctx.config.workspaceRoot}/.nju-agent`).append(ctx.sessionId, createSessionNameEntry(ctx.sessionId, name.slice(0, 120))); ctx.appendSystem(`session name: ${name.slice(0, 120)}`); return; }

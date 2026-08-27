@@ -8,7 +8,7 @@ Model output, repository files, project instructions, Skill text, tool output, a
 
 File tools resolve paths inside the workspace and protect sensitive locations. Shell execution uses an explicit working directory, bounded output, timeout, cancellation, and `shell: false`. Tool arguments, errors, telemetry, and session-visible output are redacted before persistence where applicable. Strict/confirm modes deny write and shell operations without an approval callback.
 
-Skills and project resources are only scanned from trusted project directories. The normal prompt receives Skill metadata, not every Skill body. `load_skill` accepts registered names rather than arbitrary model-provided paths. MCP tools are external-risk by default and are still routed through host schema and policy checks.
+Skills and project resources are only scanned from trusted project directories. Trust is resolved by `--approve`, `--no-approve`, or the user-level `~/.nju-agent/trust.json` store; TUI `/trust` records the canonical workspace path. The normal prompt receives Skill metadata, not every Skill body. `load_skill` accepts registered names rather than arbitrary model-provided paths. MCP tools are external-risk by default and are still routed through host schema and policy checks.
 
 ## Known limits
 
