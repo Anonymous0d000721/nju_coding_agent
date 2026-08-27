@@ -18,6 +18,11 @@ describe('parseArgs', () => {
     expect(args.permissionMode).toBe('yolo');
   });
 
+  it('accepts an explicit api format', () => {
+    const args = parseArgs(['--api-format', 'anthropic']);
+    expect(args.apiFormat).toBe('anthropic');
+  });
+
   it('rejects unknown options', () => {
     expect(() => parseArgs(['--wat'])).toThrow('Unknown option');
   });

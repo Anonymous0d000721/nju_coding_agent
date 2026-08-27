@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import type { CliArgs } from '../app/cli-args.js';
+import type { ApiFormat, CliArgs } from '../app/cli-args.js';
 
 export interface AgentConfig {
   workspaceRoot: string;
@@ -11,6 +11,7 @@ export interface AgentConfig {
     apiKey?: string;
     baseUrl: string;
     model: string;
+    apiFormat: ApiFormat;
   };
   session: {
     enabled: boolean;
@@ -32,12 +33,19 @@ export function loadConfig(input: { env: NodeJS.ProcessEnv; args: CliArgs; cwd: 
       apiKey,
       baseUrl: input.args.baseUrl ?? envValue('NJU_AGENT_BASE_URL') ?? 'https://api.openai.com/v1',
       model: input.args.model ?? envValue('NJU_AGENT_MODEL') ?? 'gpt-4.1-mini',
+      apiFormat: input.args.apiFormat ?? parseApiFormat(envValue('NJU_AGENT_API_FORMAT')),
     },
     session: {
       enabled: !input.args.noSession,
       id: input.args.session,
     },
   };
+}
+
+export function parseApiFormat(value: string | undefined): ApiFormat {
+  if (!value || value === 'openai-chat') return 'openai-chat';
+  if (value === 'openai-responses' || value === 'anthropic') return value;
+  throw new Error(`Invalid NJU_AGENT_API_FORMAT: ${value}. Expected openai-chat, openai-responses, or anthropic`);
 }
 
 export function loadDotEnv(filePath: string): Record<string, string> {

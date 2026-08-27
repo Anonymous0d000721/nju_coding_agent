@@ -1,6 +1,6 @@
 import { AgentRunner } from '../agent/runner.js';
 import { buildSystemPrompt } from '../agent/system-prompt.js';
-import { OpenAICompatibleClient } from '../model/openai-compatible.js';
+import { createModelClient } from '../model/create-client.js';
 import { ToolExecutor } from '../tools/executor.js';
 import { ToolRegistry } from '../tools/registry.js';
 import { createFileTools } from '../tools/file-tools.js';
@@ -78,7 +78,7 @@ export function createApp(services: AppServices) {
         }));
       }
       const runner = new AgentRunner({
-        model: new OpenAICompatibleClient({ apiKey: config.model.apiKey, baseUrl: config.model.baseUrl, model: config.model.model }),
+        model: createModelClient({ apiFormat: config.model.apiFormat, apiKey: config.model.apiKey, baseUrl: config.model.baseUrl, model: config.model.model }),
         tools: new ToolExecutor(registry, { workspaceRoot: config.workspaceRoot }),
         systemPrompt: buildSystemPrompt(config.workspaceRoot),
         toolDefinitions: registry.definitionsForModel(),

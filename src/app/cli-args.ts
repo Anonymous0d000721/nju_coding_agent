@@ -1,6 +1,8 @@
 import { CliError } from '../shared/errors.js';
 
 export type CliMode = 'text' | 'json' | 'rpc';
+export type ApiFormat = 'openai-chat' | 'openai-responses' | 'anthropic';
+
 export type PermissionMode = 'yolo' | 'strict' | 'confirm';
 export type TelemetryMode = 'off' | 'normal' | 'debug';
 
@@ -10,6 +12,7 @@ export interface CliArgs {
   mode: CliMode;
   prompt?: string;
   model?: string;
+  apiFormat?: ApiFormat;
   baseUrl?: string;
   apiKeyEnv: string;
   cwd?: string;
@@ -65,6 +68,9 @@ export function parseArgs(argv: string[]): CliArgs {
         break;
       case '--mode':
         args.mode = parseChoice(requireValue(argv, ++i, arg), ['text', 'json', 'rpc'], arg);
+        break;
+      case '--api-format':
+        args.apiFormat = parseChoice<ApiFormat>(requireValue(argv, ++i, arg), ['openai-chat', 'openai-responses', 'anthropic'], arg);
         break;
       case '--model':
         args.model = requireValue(argv, ++i, arg);
