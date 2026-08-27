@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { toAnthropicMessages } from '../../src/model/anthropic.js';
 import { AgentRunner } from '../../src/agent/runner.js';
 import type { AssistantTurn } from '../../src/agent/types.js';
 import type { ModelClient, ModelRequest } from '../../src/model/model-client.js';
@@ -77,6 +78,19 @@ describe('AgentRunner', () => {
     expect(result.messages.map((message) => message.role)).toEqual(['user', 'assistant', 'tool', 'assistant']);
     expect(result.messages[2]).toMatchObject({ role: 'tool', toolCallId: 'tc1' });
     expect(result.toolCalls).toBe(1);
+  });
+
+  it('produces Anthropic-adjacent tool result blocks from the runner history', async () => {
+    const runner = createRunner(new FakeModel([
+      assistant({ toolCalls: [{ id: 'call_01', name: 'echo', argumentsJson: '{"value":"ok"}' }] }),
+      assistant({ text: 'finished' }),
+    ]));
+
+    const result = await runner.run('use a tool', { maxTurns: 3, maxToolCalls: 5 });
+    const messages = toAnthropicMessages({ systemPrompt: 'system', tools: [], messages: result.messages.slice(0, 3) });
+
+    expect(messages[1]).toMatchObject({ role: 'assistant', content: [{ type: 'tool_use', id: 'call_01' }] });
+    expect(messages[2]).toMatchObject({ role: 'user', content: [{ type: 'tool_result', tool_use_id: 'call_01' }] });
   });
 
   it('converts unknown tools into paired tool result messages', async () => {
