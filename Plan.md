@@ -798,7 +798,9 @@ docs: finalize usage guide and demo scenario
 - [x] Phase E：项目 instructions、catalog-first Skills、`load_skill`、lifecycle hooks 与有界 compaction 基础。
 - [x] Project Trust：`--approve`/`--no-approve`、用户级 canonical workspace trust store、TUI `/trust`，未信任项目不加载 Skills/MCP 行为资源。
 - [x] Phase F 基础：结构化 todo、run evidence telemetry、stop 生命周期和可复现 demo fixture。
+- [x] GoalGate 基础：验证型目标必须具备成功 `run_command` 证据；缺证据时向模型追加一次 host verification requirement。
 - [x] Phase G 基础：opt-in MCP stdio JSON-RPC、initialize/tools/list/tools/call、命名冲突检测、host registry/policy 边界。
+- [x] Phase H 基础：`/fork` session lineage、显式 background command/status/cancel；并发高级 workflow/subagent/worktree 仍未实现。
 - [x] Phase I 文档基础：README、architecture、decisions、threat-model、CI；README 汉字数符合 Assignment 约束。
 - [x] TUI：参考 Pi/Claude Code 完成可见光标、多行编辑、Markdown、语义 transcript、picker、取消、resume 历史分页。
 - [ ] 完整 MCP demo server、完整 context compaction/summary lifecycle、GoalGate、复杂 session tree/fork、subagent/worktree/background workflow。
