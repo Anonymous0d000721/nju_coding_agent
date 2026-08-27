@@ -1,7 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
-import type { AgentSession, CreateSessionOptions, SessionEntry, SessionStartEntry } from './session-types.js';
+import type { AgentSession, CreateSessionOptions, SessionDisplayPage, SessionEntry, SessionStartEntry } from './session-types.js';
 
 export class JsonlSessionStore {
   constructor(private readonly rootDir: string) {}
@@ -32,6 +32,19 @@ export class JsonlSessionStore {
     const first = entries[0];
     if (!first || first.type !== 'session_start') throw new Error(`Session file lacks session_start: ${sessionPath}`);
     return { id: first.sessionId, path: sessionPath, entries };
+  }
+
+  async readDisplayPage(sessionId: string, options: { beforeEntryId?: string; limit?: number } = {}): Promise<SessionDisplayPage> {
+    const session = await this.open(sessionId);
+    const limit = options.limit ?? 80;
+    if (!Number.isInteger(limit) || limit < 1) throw new Error(`Invalid session history page limit: ${limit}`);
+    const boundary = options.beforeEntryId === undefined
+      ? session.entries.length
+      : session.entries.findIndex((entry) => entry.id === options.beforeEntryId);
+    if (boundary < 0) throw new Error(`Unknown session history cursor: ${options.beforeEntryId}`);
+    const start = Math.max(0, boundary - limit);
+    const entries = session.entries.slice(start, boundary);
+    return { entries, hasMore: start > 0, nextBeforeEntryId: start > 0 ? entries[0]?.id : undefined };
   }
 
   async append(sessionId: string, entry: SessionEntry): Promise<void> {

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { applyAgentEvent, type TuiMessage } from '../../src/app/tui.js';
+import { applyAgentEvent, sessionEntriesToTuiMessages, type TuiMessage } from '../../src/app/tui.js';
+import type { SessionEntry } from '../../src/session/session-types.js';
 import type { AgentStreamEvent } from '../../src/agent/types.js';
 
 const base: TuiMessage[] = [{ role: 'system', text: 'ready' }];
@@ -37,8 +38,39 @@ describe('TUI event rendering', () => {
 
     expect(withResult).toEqual([
       { role: 'system', text: 'ready' },
-      { role: 'tool', text: '[tool] read_file' },
-      { role: 'tool', text: '[tool result] read_file failed:permission_denied', ok: false },
+      { role: 'tool', text: 'read_file · failed:permission_denied', ok: false, toolCallId: 'call-1' },
+    ]);
+  });
+
+  it('updates the active tool card instead of appending a trailing result overview', () => {
+    const withCall = applyAgentEvent(base, {
+      type: 'tool_call',
+      toolCall: { id: 'call-1', name: 'read_file', argumentsJson: '{"path":"a"}' },
+    }, false);
+    const completed = applyAgentEvent(withCall, {
+      type: 'tool_result',
+      result: { toolCallId: 'call-1', toolName: 'read_file', ok: true, content: 'hidden', elapsedMs: 1 },
+    }, false);
+
+    expect(completed).toEqual([
+      { role: 'system', text: 'ready' },
+      { role: 'tool', text: 'read_file · completed', ok: true, toolCallId: 'call-1' },
+    ]);
+  });
+
+  it('rebuilds persisted conversation and tool status for session hydration', () => {
+    const entries: SessionEntry[] = [
+      { type: 'message', id: 'u', sessionId: 's', timestamp: 't', schemaVersion: 1, message: { role: 'user', content: 'Fix **this**.' } },
+      { type: 'message', id: 'a', sessionId: 's', timestamp: 't', schemaVersion: 1, message: { role: 'assistant', content: 'I will inspect it.', toolCalls: [{ id: 'call-1', name: 'read_file', argumentsJson: '{}' }] } },
+      { type: 'message', id: 'r', sessionId: 's', timestamp: 't', schemaVersion: 1, message: { role: 'tool', toolCallId: 'call-1', content: 'contents' } },
+      { type: 'run_end', id: 'end', sessionId: 's', timestamp: 't', schemaVersion: 1, stopReason: 'user_cancelled', turns: 1, toolCalls: 1 },
+    ];
+
+    expect(sessionEntriesToTuiMessages(entries)).toEqual([
+      { role: 'user', text: 'Fix **this**.' },
+      { role: 'assistant', text: 'I will inspect it.' },
+      { role: 'tool', text: 'read_file · completed', ok: true, toolCallId: 'call-1' },
+      { role: 'cancelled', text: 'Run interrupted.' },
     ]);
   });
 });

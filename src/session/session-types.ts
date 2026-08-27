@@ -52,4 +52,9 @@ export interface SummaryEntry extends BaseSessionEntry {
 export type SessionEntry = SessionStartEntry | MessageEntry | RunStartEntry | RunEndEntry | ThinkingLevelChangeEntry | SummaryEntry;
 
 export interface AgentSession { id: string; path: string; entries: SessionEntry[]; }
+export interface SessionDisplayPage {
+  entries: SessionEntry[];
+  hasMore: boolean;
+  nextBeforeEntryId?: string;
+}
 export interface CreateSessionOptions { cwd: string; model: string; appVersion: string; name?: string; }

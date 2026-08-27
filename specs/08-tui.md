@@ -10,9 +10,12 @@
 - `refs/pi/packages/coding-agent/README.md`：Pi 交互界面由启动 header、消息区、editor、footer 组成；`/model`、`/thinking`、`/resume` 打开选择器；非交互模式 `-p`/JSON/RPC 不弹交互 UI。
 - `refs/pi/packages/coding-agent/docs/keybindings.md`：选择器与编辑器有独立键位域；`Enter` 提交/确认、`Esc` 取消或中断、`Ctrl+L` 选模型、`Shift+Tab` 循环 thinking、`Ctrl+T` 折叠 thinking、`Ctrl+O` 折叠工具输出。
 - `refs/pi/packages/coding-agent/docs/tui.md`：UI 组件应只处理渲染与输入，不承担 agent loop；selector/confirm/input 是通用交互原语；overlay/picker 需要明确焦点和生命周期。
-- `refs/pi/packages/coding-agent/src/core/agent-session.ts`：model 切换应重新计算/钳制 thinking level，并记录 model/thinking 变更；thinking level 是模型请求配置，不等同于“是否显示思考块”。
-- `refs/hello-agents/.../cli_channel.py` 与 `cli/repl.py`：较简单 REPL 也遵循欢迎区、命令处理、流式文本、工具开始提示、错误兜底的最小交互模式。
-- `refs/sjtu-agent/docs/AGENT_ARCHITECTURE.md`：TUI 属于 Harness/Observability 层，应服务于可靠 loop、权限和上下文质量，而不是把业务逻辑写进 UI。
+- `refs/pi/packages/coding-agent/src/modes/interactive/components/assistant-message.ts`：assistant 主文本保持无背景、留白克制；thinking 为低对比度斜体 Markdown；只有 tool/activity 使用独立状态块，避免把每条 transcript 都做成同质化卡片。
+- `refs/pi/packages/coding-agent/src/modes/interactive/components/session-selector.ts`：session picker 提供 loading/progress、范围与排序等上下文，并且每条 session 元数据独立于完整 transcript；加载失败不会破坏返回编辑器的能力。
+- `refs/pi/packages/coding-agent/docs/tui.md`：主题必须区分 `userMessageBg`、`toolPendingBg`、`toolSuccessBg`、`toolErrorBg` 等语义色；每行宽度受限且样式逐行 reset。
+- `refs/Claude-Code/src/components/SessionPreview.tsx`：列表先读取轻量 session metadata，预览时异步加载完整记录，并在加载中保持明确的 loading/cancel 状态。
+- `refs/Claude-Code/src/assistant/sessionHistory.ts`：历史以最近页优先的 cursor pagination 获取，成功页按时间顺序追加；失败返回 `null`，调用方保留已加载内容而不是清空 transcript。
+- `refs/Claude-Code/src/components/VirtualMessageList.tsx`：长 transcript 的消息渲染、搜索和输入区定位必须和 editor 状态解耦，避免恢复历史时重新挂载 editor 或丢失草稿。
 
 核心结论：TUI 是交互 harness，不是 agent loop。它只负责输入、选择、状态展示、事件渲染和用户控制；模型调用、工具执行、权限、session 持久化必须继续由 App/Runner/Tool 层负责。
 
@@ -64,6 +67,7 @@
 - 单次 text/print 模式不进入 TUI；仍允许流式写 stdout。
 - TUI 不解析 provider SSE；只消费 Runner 发出的统一事件。
 - TUI 崩溃或渲染失败不得破坏 tool-call/tool-result 配对与 session 落盘。
+- interactive UI、`runPrompt()` 与 Runner 必须共享明确的 run lifecycle；不得因流式运行期间输入第二条 prompt 而产生未跟踪的并发 run。
 
 ## 5. 架构边界
 
@@ -97,11 +101,16 @@ TUI 可以持有界面状态，但不得持有或复制 agent loop 状态。所�
 从上到下：
 
 1. **Header**
-   - 仅展示简洁 app/version 与 workspace 标识；不把运行状态塞在顶部。
+   - 单行、低对比度的 app/version、workspace 与当前 session short id；仅在启动、切换 session 或发生明确状态变化时更新。
+   - 不是大边框卡片，不重复展示可在 footer/status 获取的信息；窄终端按优先级截断 workspace，再截断 session id。
 2. **Transcript**
-   - system notice、用户输入、assistant 流式文本、可选 reasoning、工具生命周期和错误；
-   - 消息不得显示 `user`、`assistant`、`thinking` 等角色前缀；以不同背景色、边距和文字样式分组，形成类似 Pi/Claude Code/Codex 的视觉层级；
-   - 用户消息使用一类强调背景；assistant 使用另一类中性背景；reasoning 在开启时使用低对比度背景；错误使用明显但可读的错误背景；
+   - 以连续阅读流呈现，不给每条消息套完整边框；只在语义需要分组或强调时使用左侧缩进、1 行留白、颜色或背景。
+   - 用户 prompt 为窄的强调背景块，文本允许换行但不显示角色标签；相邻用户 prompt 不应合并。
+   - assistant 主文本为无背景或极弱中性背景的 Markdown 阅读区，使用固定左右 padding 和段落间距；不能把每个 token/delta 变成单独块。
+   - reasoning 关闭时不占行；开启时使用低对比度、斜体且可折叠的次级区域，不能与 assistant 正文或错误同色。
+   - tool execution 只使用紧凑单行或少数多行活动块：pending、success、error 必须各自有状态色；正常 completion 默认只显示工具名、结果状态、耗时和必要的修改摘要，不显示参数或完整输出。
+   - system/notice 使用低对比度文本而不是彩色大卡片；错误、权限拒绝、取消和模型中断使用不同的语义色与简短说明。
+   - transcript 连续区的最大可见项目数、分页 marker 与滚动锚点由 state 管理；不得用 `slice(-N)` 静默丢弃 UI 已加载的会话历史。
    - assistant、reasoning 与系统文本支持安全的终端 Markdown 渲染（标题、段落、强调、行内 code、code block、列表、引用、链接文本）；未知/不支持语法必须回退为原文，绝不输出原始 HTML 或不受控 ANSI。
 3. **Widget area**
    - `/resume`、`/model`、`/effort`、`/reasoning` 的 picker；
@@ -114,6 +123,16 @@ TUI 可以持有界面状态，但不得持有或复制 agent loop 状态。所�
 5. **Status bar（位于 editor 下方）**
    - workspace、api format、model、effort、session id 或 `(new)`、permission mode、reasoning display、run status；
    - 可附紧凑 key hint，如 `Enter send · Shift+Enter newline · Esc cancel`。
+
+### 6.1 运行中输入与取消
+
+v1 不实现 steering 或 follow-up queue，且每次只允许一个 active run：
+
+- `running` 时 editor 可保留或允许编辑草稿，但 `Enter` 不得提交、排队或丢弃第二条 prompt；状态栏必须说明 run 正在进行；
+- 没有 overlay/completion 时，`Esc` 对 active run 发出取消请求（经 `AbortController` / Runner cancellation）；取消优先级低于关闭 completion/picker；
+- 取消请求发出后 editor 禁止再次提交，直到当前 run 已清理完毕并回到 `idle`；原有草稿必须保留；
+- 被取消的 run 必须出现独立于 error 的 `cancelled`/`interrupted` notice，并让状态栏返回 idle；不得将 user cancellation 渲染为模型或工具错误；
+- 后续引入 steering/follow-up queue 时，必须扩展为显式的 session/Runner 接口、可视 pending 队列以及取消/恢复规则，不能复用 v1 的禁用提交行为进行隐式排队。
 
 ## 7. UI 状态模型
 
@@ -130,6 +149,8 @@ interface TuiState {
   permissionMode: PermissionMode;
   showReasoning: boolean;
   status: RunStatus;
+  /** 当前 run 的取消请求已发出但尚未完成清理时为 true。 */
+  cancelling?: boolean;
   transcript: TuiTranscriptItem[];
   editor: {
     text: string;
@@ -172,6 +193,7 @@ type AgentStreamEvent =
 渲染规则：
 
 - `text_delta`：追加到当前 assistant item；没有则新建 assistant item；以 Markdown renderer 渲染。
+- cancellation 完成：追加或更新为独立 cancelled/interrupted notice，不将已接收的 assistant 文本或已有工具卡片删除、伪造为 error，且不得追加重复的最终 assistant 文本。
 - `thinking_delta`：
   - `showReasoning=false`：不显示，但不影响 run；
   - `showReasoning=true`：追加到低对比度 reasoning item，并以 Markdown renderer 渲染；
@@ -199,14 +221,23 @@ type AgentStreamEvent =
 | `/compact` | 显示未实现说明 | 可暂不处理参数 |
 | `/quit` `/exit` | 退出 TUI | 不需要参数 |
 
-### 9.2 resume picker
+### 9.2 resume picker 与 transcript hydration
 
-- 展示 `(new session)` 和最近 sessions；
-- 当前 session 标注 `current`；
-- 选中 session 后仅切换 session id，下一条 prompt 使用该 session 的历史；
-- 若 session disabled，显示 `Sessions are disabled`，不打开空 picker。
+`/resume` 不是只替换 `sessionId` 的配置操作；确认一个 session 后，TUI 必须将其历史变为可阅读的 transcript 视图，并且保持 Runner 的 session history 与显示 history 使用同一个 session source。
 
-后续可增强：显示 cwd、modified time、first message、message count、搜索过滤。
+- picker 首屏可使用轻量 `SessionSummary`，至少包含：short id、最近修改时间、消息数、首条用户消息的安全单行摘要，以及 current 标识；不得为了展示列表同步读取每份完整 JSONL。
+- 选择后立刻清空旧 session 的 transient UI 项（streaming assistant、pending tool、旧 error）；保留 editor 草稿、model/effort/reasoning display 和 picker 返回语义。
+- 进入 `hydrating` 状态：状态栏明确显示 `loading session history`，transcript 可先显示 loading placeholder；加载期间不得接受 prompt submit，`Esc` 必须取消 hydration 并恢复选择前的 session/transcript/editor 状态。
+- 首页必须加载**最近且完整的 N 个可渲染 transcript items**（建议默认 80，范围 50–100），并按时间正序显示。该预算按 render item 而不是 JSONL line 计算，以免 tool call/result 或 metadata 挤掉所有对话。
+- hydration 必须从 JSONL 解析 user、assistant、tool lifecycle、run notice、model/thinking changes；只影响 LLM context 的 entry 与只影响 UI 的 entry 必须明确区分。不得从 event 字段、工具输出或未知 JSON 中执行任何内容。
+- 历史 assistant/tool 内容必须沿用当前 Markdown、tool-card 与 redaction 规则。历史 reasoning 仅在 session 确实持久化它且 `showReasoning=true` 时显示；缺失 reasoning 不得伪造。
+- 首页之前仍有记录时，在 transcript 顶部显示紧凑的 `Load earlier history` marker，而不是静默截断。激活后以 cursor/line-offset 加载紧邻的更早一页，去重后追加到顶部，并保持用户当前阅读锚点不跳动。
+- 分页中每次只允许一个 request；重复触发、过期 request、切换 session 或退出 TUI 后返回的结果必须丢弃。分页完成时 marker 变为 `Beginning of session`；空 session 显示明确 empty state。
+- JSONL 读取失败、解析失败、损坏尾行、权限错误或 session 不存在时，保留已有的成功页和 editor，显示可读 error notice；不得清空为新 session、不得使 TUI 崩溃。损坏尾行可忽略并报告已恢复到最后一条合法 entry；中间损坏必须报告 session unreadable 并允许返回 picker。
+- hydration 成功后才提交新的 active `sessionId`；若失败或被取消，应原子恢复此前选择的 session、transcript 和 status，避免 status 与实际 Runner history 不一致。
+- `/resume <id>` 与 picker 选择必须共享同一 hydration action 和错误路径；不能保留一个只改 id 的 fast path。
+
+后续可增强搜索、按 workspace/branch 分组、命名、tree/fork/clone，但不得替代本节的首屏 history 与降级语义。
 
 ### 9.3 model picker
 
@@ -261,23 +292,32 @@ Editor 是多行文本编辑器，不得把输入简化为只会 append/backspac
 ### 11.1 基础编辑
 
 - 可输入普通文本、粘贴文本和换行；
-- Left/Right：在同一行按字符移动光标；到行首/行尾时不得跳到其他 prompt；
-- Backspace/Delete：删除光标前/后的字符；
-- `Shift+Enter` 插入换行；`Enter` 提交当前 prompt；
+- 文本操作中的“字符”一律指 Unicode grapheme cluster：Left/Right、Backspace/Delete 不得将组合字符、emoji 或 ZWJ 序列截断；
+- editor 必须以终端显示列而非 UTF-16 offset 计算布局。CJK 宽字符、emoji、combining mark 和窄终端下的软换行都必须使可见光标落在正确 visual column；
+- Left/Right：在同一逻辑行按 grapheme cluster 移动光标；到行首/行尾时不得跳到其他 prompt；
+- Backspace/Delete：删除光标前/后的一个 grapheme cluster；
+- `Shift+Enter` 插入换行，`Ctrl+J` 是所有受支持终端中的必备换行后备键；若终端不能可靠区分 `Shift+Enter`，它不得意外提交 prompt；`Enter` 提交当前 prompt；
 - 输入 `/` 开头的内容时触发第 12 节命令补全；提交完整 slash command 后按第 9 节处理；
 - running 时禁止提交，必须保留或明确提示当前 editor 内容。
 
 ### 11.2 Up/Down 与多行优先级
 
-1. **多行 editor**：Up/Down 首先遵循普通编辑器行为，在相邻可视/逻辑行移动，并尽力保持同一 column；到首行/末行后才考虑 history。
+1. **多行 editor**：Up/Down 首先遵循普通编辑器行为，在相邻 visual line（包含软换行）移动，并尽力保持同一显示列；到首个/最后一个 visual line 后才考虑 history。
 2. **单行且有文字**：第一次 Up 将光标移至该行开头；第一次 Down 将光标移至该行末尾。只有光标已经在对应边界时，再切换 prompt history。
 3. **空 editor**：Up/Down 直接切换 prompt history。
 4. history 切换必须保存被替换前的草稿；从最新 history 再 Down 时恢复草稿或清空 editor。
 5. history 只含已成功提交的普通 prompt；slash command、空白 prompt、以及失败前未提交的草稿不进入 history。
 
-### 11.3 取消与恢复
+### 11.3 Paste 与输入协议
 
-- `Esc` 先关闭 picker/completion；无 overlay 时可中断当前 run；
+- 支持 bracketed paste（`ESC[200~` 至 `ESC[201~`）：必须先缓冲完整 payload，再作为一次原子 editor insertion；不得将 payload 内的 Enter、`/` 或控制序列解释为提交、slash completion 或快捷键；
+- 终端不支持 bracketed paste 时，降级为普通文本输入，不得崩溃；
+- 必须规定并实现单次 inline paste 上限。超过上限时，安全截断或替换为可见占位提示；不得造成无界内存增长、逐字符重绘风暴或意外提交；
+- pasted 内容（包括多行 slash-like 文本与 escape-like 文本）只能在用户随后显式按下提交键时才会被当作 prompt/command 处理。
+
+### 11.4 取消与恢复
+
+- `Esc` 先关闭 picker/completion；无 overlay 时按第 6.1 节中断 active run；
 - `Ctrl+C` 清空 editor，editor 已空时退出或显示二次确认提示；
 - prompt history 与 editor 操作应由纯 reducer 覆盖测试，避免依赖真实 Ink raw-mode。
 
@@ -293,20 +333,26 @@ Editor 是多行文本编辑器，不得把输入简化为只会 append/backspac
 - 若用户继续输入参数，completion 可保留匹配命令或在第一个空格后关闭；第一版固定为第一个空格后关闭；
 - 对 `/` 本身显示全部命令；命令列表从单一数据源导出，供 completion、`/help` 与命令解析共享，避免漂移。
 
-## 13. 终端与渲染约束
+## 13. 终端、焦点与渲染约束
 
-- 终端宽度不足时，长文本必须换行或截断，不输出超过宽度的裸行；Ink 可承担基础换行。
-- 样式不得跨行泄漏；每条消息独立渲染。
+- 每次渲染产生的每一条 visual line（包括 Markdown、status、completion 描述、错误和工具卡片）去除 ANSI 后的显示宽度必须 `<=` 当前 terminal cell width；宽度不足时换行或截断，绝不输出超宽裸行；
+- terminal resize 后必须重新计算软换行、cursor visual location、picker/completion 可见区域与选中索引；不得丢失 editor text、草稿或 session 状态；
+- 样式不得跨行泄漏；每条消息独立渲染并 reset styling。Markdown 渲染与截断必须 ANSI-aware；
+- editor、completion 与 picker 的焦点必须互斥，任意时刻只能有一个键盘输入 owner；关闭 overlay/completion 必须恢复 editor focus 和 visible cursor；
+- 必须支持可见 hardware cursor；在支持的终端中应将其位置与 editor cursor 同步，以便 CJK IME 候选窗定位。若能力不可用，降级为软件光标但不得隐藏输入位置；
+- 终端不支持 bracketed paste、enhanced keyboard 或 modified Enter 时必须平稳降级，且 `Ctrl+J` 始终可插入换行；
 - 不打印 secret、API key、Authorization header；错误沿用 redaction。
 - 运行中状态更新应节流或依赖 Ink 渲染调度，避免每 token 强制全屏刷屏。
 - Windows Terminal 下避免默认依赖 `Alt+Enter` 等会与系统冲突的快捷键。
 
 ## 14. 与 session 的关系
 
-- TUI transcript 是 session 的视图，不是 session 真源。
-- 用户 prompt、assistant message、tool result、run start/end 仍由 runPrompt/Runner/session store 负责落盘。
-- resume 后，状态栏 session id 立即更新；历史 transcript 第一版可以不回放，后续可加载最近消息摘要。
+- TUI transcript 是 session 的可重建视图，不是 session 真源；但 **恢复 session 后必须 hydration 最近历史**，具体规则见第 9.2 节。
+- 用户 prompt、assistant message、tool result、run start/end 仍由 runPrompt/Runner/session store 负责落盘；UI 不能将纯展示状态反写成新的消息 entry。
+- `SessionStore` 需暴露或新增只读、分页、可取消的 display-history 查询边界。该边界返回经过 schema 校验的 session entries、`hasMore` 和 next cursor；它不允许 TUI 直接读取任意路径或自行解释未验证 JSONL。
+- status 中的 session id 只有在 hydration 成功后才更新；显示的历史、`runPrompt()` 传入的 restored context、以及 active session id 必须对应同一 revision/session。
 - model/effort 变更应作为 session change entry 记录；reasoning display 不必落盘。
+- session history 的显示预算与送入模型的 context budget 是两个独立限制：UI 可分页浏览完整本地历史，Runner 仍按 context policy 裁剪模型请求；不得从 UI 截断推断 context 截断。
 
 ## 15. 错误处理
 
@@ -331,15 +377,23 @@ Editor 是多行文本编辑器，不得把输入简化为只会 append/backspac
 9. editor 显示光标，Left/Right、Backspace/Delete、提交和多行编辑符合第 11 节；
 10. Up/Down 的多行、边界和 prompt-history 优先级符合第 11.2 节；
 11. `/`、`/re` 和无匹配命令分别显示全部、前缀匹配和空的 completion 状态；completion 支持 Up/Down、Tab/Enter、Esc；
-12. `/resume`、`/model`、`/effort`、`/reasoning` 无参数打开 picker；
+12. `/resume`、`/resume <id>`、`/model`、`/effort`、`/reasoning` 无参数分别遵循 picker/统一 action 语义；
 13. picker 支持 Up/Down、Enter、Esc；
 14. `/thinking` 作为 `/reasoning` alias 可用；
-15. `text_delta` 更新 assistant item，Markdown 内容正确渲染；
-16. transcript 通过背景和样式区分内容，不显示 user/assistant/thinking 角色标签；
-17. `thinking_delta` 默认隐藏，`/reasoning on` 后显示；
-18. tool_call/tool_result 仅显示运行期紧凑卡片，run 结束后没有额外总览；
-19. status 位于 editor 下方；
-20. run 结束不重复渲染已流出的 assistant 文本。
+15. 选择有历史的 session 后，TUI 在不调用模型的情况下显示最近完整 history page，顺序、Markdown、tool cards 和已有 redaction 与 live transcript 一致；`/resume <id>` 与 picker 行为一致；
+16. 有更早 history 时显示可操作的 pagination marker；加载前页后不重复、不跳动 editor、不会覆盖较新的 transcript；
+17. history hydration 的 missing/corrupt/permission/abort 情形保留已有成功内容或恢复前一 session，并给出可读 notice；
+18. `text_delta` 更新 assistant item，Markdown 内容正确渲染；
+19. transcript 采用连续阅读层级：用户强调块、assistant 主阅读区、低对比 reasoning、状态化 tool activity、轻量 notices；不得将每条消息都渲染为同质化全边框卡片，也不得显示 user/assistant/thinking 角色标签；
+20. `thinking_delta` 默认隐藏，`/reasoning on` 后显示；
+21. tool_call/tool_result 仅显示运行期紧凑卡片，run 结束后没有额外总览；
+22. status 位于 editor 下方；
+23. run 结束不重复渲染已流出的 assistant 文本；
+24. running 时第二条 prompt 不会被提交、隐式排队或丢弃；Esc 遵循 overlay-first 优先级，取消后保留草稿并显示 cancelled/interrupted notice；
+25. 组合字符、emoji/ZWJ、CJK 宽字符、软换行与窄终端下的移动/删除/光标位置正确；
+26. bracketed-paste 多行 slash-like 内容、escape-like 内容及超过上限的 paste 不会触发提交/命令，且行为受限、可见；
+27. width 为 20/40 及 resize 后，所有 visual line 均不超宽，editor 文本与 picker/completion 状态仍有效；
+28. 至少在 Windows Terminal 和一个不支持 Kitty/enhanced keyboard 的基础终端完成 smoke；Shift+Enter 不可用时 Ctrl+J 可稳定换行，IME/软件光标始终可见。
 
 建议测试层次：
 
@@ -347,7 +401,18 @@ Editor 是多行文本编辑器，不得把输入简化为只会 append/backspac
 - app 模式测试：JSON/text 不进入 TUI；interactive 调用 TUI；
 - 必要时用 mock `runPrompt` 做 TUI smoke，而不是真实 API。
 
-## 17. 实施顺序建议
+## 17. 后续增强边界
+
+以下仍为明确的 v1 非目标，但为避免未来破坏性重构，后续设计必须沿用稳定 action/状态边界：
+
+- **可配置快捷键**：采用 namespaced action id、一个 action 可绑定多个键，并声明 editor、completion、picker、global shortcut 的冲突优先级；
+- **fullscreen transcript**：若引入 alternate screen，必须固定 editor dock，定义 transcript scroll focus、PageUp/PageDown/Home/End、搜索及恢复滚动位置；v1 继续使用终端原生 scrollback；
+- **message queue / steering**：必须有显式 pending 项、delivery 时机、取消/恢复/重排规则及 session 语义；
+- **扩展 completion**：后续可接异步 command/参数/path/`@` provider，但应有 debounce、AbortSignal、陈旧请求丢弃和按 cursor 位置替换的契约；
+- **附件与外部 editor**：引入 clipboard image/file 或外部编辑器前，先定义 provider/session attachment contract、清理策略、权限及敏感信息处理；
+- **会话树与 compaction**：tree/fork/clone/rename/delete、真实 `/compact` 及其 lifecycle 必须与第 6.1 节的 active-run 输入规则一致。
+
+## 18. 实施顺序建议
 
 等用户明确说“执行/实现”后，按以下顺序：
 

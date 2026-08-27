@@ -1,62 +1,49 @@
 # nju-agent
 
-一个自行实现的 TypeScript / Node.js 本地 coding agent。它通过模型原生工具调用读取、修改和检查当前工作区，并将对话和工具结果保存为可恢复的 JSONL session。
+独立实现的 TypeScript/Node.js 本地 coding agent。模型通过原生 tool calling 读取、修改、检查工作区；项目不使用 LangChain、Agents SDK 等 agent framework。
 
 ## 运行
 
-要求 Node.js 22+。
+要求 Node.js 22+：
 
 ```powershell
 npm install
 Copy-Item .env.example .env
+npm run dev -- --print "检查当前项目并运行测试"
 ```
 
-编辑 `.env`，填写本地未入库的 API 配置：
+在 `.env` 填写 `NJU_AGENT_API_KEY`、`NJU_AGENT_BASE_URL`、`NJU_AGENT_MODEL`，可用 `NJU_AGENT_API_FORMAT` 选择 `openai-chat`、`openai-responses` 或 `anthropic`。`--json` 输出机器可读结果，`--no-session` 不保存会话。
 
-```text
-NJU_AGENT_API_KEY=your-key
-NJU_AGENT_BASE_URL=https://api.anthropic.com
-NJU_AGENT_MODEL=your-model
-NJU_AGENT_API_FORMAT=anthropic
-```
-
-运行单条任务：
-
-```powershell
-npm run dev -- --print "列出当前项目的文件，并说明每个目录的用途"
-```
-
-也支持 `openai-chat`、`openai-responses` 和 `anthropic` 三种协议，可用 `--api-format` 覆盖环境变量。`--json` 输出单行机器可读结果，`--no-session` 禁止持久化。
-
-不带 prompt 时进入 Ink TUI：
+不带 prompt 进入 Ink TUI：
 
 ```powershell
 npm run dev
 ```
 
-TUI 支持普通输入和 slash command。`/resume`、`/model`、`/effort`、`/reasoning` 无参数时打开可用上下键选择、Enter 确认、Esc 取消的 picker；带参数时走快速路径。`/thinking` 仅作为 `/reasoning` 的兼容 alias。
+TUI 支持多行编辑、可见光标、Markdown、流式文本、紧凑工具状态、prompt history 和 slash picker。`/resume` 会恢复最近对话并可按页加载更早历史；`/model`、`/effort`、`/reasoning` 提供选择器。
 
-`/effort [level]` 控制发给模型的思考强度，支持 `off`、`minimal`、`low`、`medium`、`high`、`xhigh`、`max`；`/reasoning [on|off]` 只控制是否显示流式 reasoning/thinking 文本。可通过 `NJU_AGENT_THINKING_LEVEL_MAP` 为不同模型映射 provider 参数，使用 `null` 禁用等级。
+## 演示 fixture
 
-## 当前能力
+`examples/buggy-todo-cli/` 提供一个无网络依赖的故意失败任务。可先运行其测试观察失败，再让 agent 读取实现、修复代码并重新运行测试；fixture 自带 Vitest 配置，不参与主项目测试扫描。
 
-- 自建有限 agent loop：模型回复、批量工具调用、结果回填、最大轮数和工具调用预算。
-- 文件工具：`list_files`、`read_file`、`write_file`、`hashline_edit`、`glob_files`、`grep_files`。
-- PowerShell `run_command`：工作区 cwd、超时、取消、退出码、输出截断和基本危险命令拒绝。
-- 工作区路径保护、敏感路径保护、参数 JSON Schema 校验、未知工具和工具异常的结构化结果。
-- Anthropic Messages、OpenAI Responses、OpenAI Chat Completions 原生适配，工具调用 ID 会被严格配对。
-- JSONL session：追加保存 user / assistant / tool 消息，支持重启后通过 `--session <id>` 或 `/resume` 继续。
 
-## 安全边界
+- AgentRunner：多轮工具调用、预算、取消、结构化错误和流式事件。
+- 文件/搜索/PowerShell 工具：工作区路径保护、超时、截断、权限模式。
+- JSONL session：消息即时追加、损坏尾行恢复、历史分页。
+- Instructions、catalog-first Skills、`load_skill`、生命周期 hooks 和有界上下文压缩。
+- todo 持久化、脱敏本地 telemetry、MCP stdio JSON-RPC 工具发现与注册；MCP 仅在 `NJU_AGENT_MCP_SERVERS` 显式配置时启动。
+- OpenAI Chat/Responses、Anthropic Messages 原生适配。
 
-API key 只从环境变量或未入库 `.env` 读取，不传入命令行，不写入 session 和日志。文件访问限制在 workspace 内；工具结果有大小上限；`strict` 和 `confirm` 模式在没有审批回调时拒绝写入和 shell 工具。项目内容属于不可信数据，不能替代宿主安全策略。
+## 安全
+
+API key 只从环境变量或未入库 `.env` 读取。工具不是操作系统 sandbox，按启动用户权限运行；路径保护、权限策略、超时和 redaction 不能替代容器、VM 或最小权限账户。
 
 ## 验证
 
 ```powershell
 npm run typecheck
-npm test
+npm test -- --run
 npm run build
 ```
 
-本项目不依赖任何 agent 框架；agent loop、工具注册与校验、消息转换、会话持久化和安全边界均由本项目实现。参考资料仅位于 `refs/`，不参与运行时。
+架构、设计决策和限制见 `docs/architecture.md`、`docs/decisions.md`、`docs/threat-model.md`。参考代码只位于 `refs/`，不参与运行时。
