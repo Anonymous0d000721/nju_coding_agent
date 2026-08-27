@@ -21,6 +21,7 @@ import { expandPromptAttachments } from '../context/attachments.js';
 import { SkillRegistry } from '../context/skills.js';
 import { createTodoTools } from '../plan/todo-tools.js';
 import { TelemetryStore } from '../telemetry/store.js';
+import { createRunReport, writeRunReport } from '../telemetry/report.js';
 import { McpManager } from '../mcp/client.js';
 import { createStdioTransport } from '../mcp/stdio.js';
 import { registerMcpTools } from '../mcp/registry-adapter.js';
@@ -126,6 +127,11 @@ export async function runPrompt(config: AgentConfig, prompt: string, sessionId?:
       } : undefined,
     }, signal);
     if (session && sessionStore) await sessionStore.append(session.id, createRunEndEntry(session.id, result));
+    if (config.telemetry !== 'off') {
+      const report = createRunReport(runId, prompt, result);
+      const reportPath = await writeRunReport(`${config.workspaceRoot}/.nju-agent/logs`, report);
+      await telemetry.append({ type: 'run_report', sessionId: session?.id, runId, data: { path: reportPath, stopReason: report.stopReason, toolCalls: report.toolCalls } });
+    }
     await telemetry.append({ type: 'run_end', sessionId: session?.id, runId, data: { stopReason: result.stopReason, turns: result.turns, toolCalls: result.toolCalls } });
     const rendered = mode === 'json'
       ? `${JSON.stringify({ type: 'run_end', level: 'info', data: result })}\n`
