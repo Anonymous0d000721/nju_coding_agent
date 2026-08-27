@@ -1,0 +1,31 @@
+{
+  "name": "nju-agent",
+  "version": "0.1.0",
+  "description": "A small local coding agent for the NJU software engineering recommendation project.",
+  "type": "module",
+  "bin": {
+    "nju-agent": "dist/index.js"
+  },
+  "scripts": {
+    "dev": "tsx src/index.ts",
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "keywords": [
+    "coding-agent",
+    "openai-compatible",
+    "cli"
+  ],
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^26.4.0",
+    "tsx": "^4.23.12",
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.11"
+  }
+}

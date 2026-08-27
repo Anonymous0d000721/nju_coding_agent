@@ -69,3 +69,7 @@ Thumbs.db
 *.dll
 *.so
 *.dylib
+
+# nju-agent local runtime state
+.nju-agent/
+
