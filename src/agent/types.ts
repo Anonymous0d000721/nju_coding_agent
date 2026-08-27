@@ -39,6 +39,7 @@ export interface AgentRunOptions {
   thinking?: ThinkingConfig;
   onStreamEvent?: (event: AgentStreamEvent) => void | Promise<void>;
   onCompaction?: (summary: string, omittedMessages: number) => void | Promise<void>;
+  goalGate?: boolean;
 }
 
 export interface AgentRunResult { stopReason: StopReason; messages: AgentMessage[]; turns: number; toolCalls: number; }

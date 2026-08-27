@@ -120,7 +120,7 @@ export async function runPrompt(config: AgentConfig, prompt: string, sessionId?:
   });
   try {
     let streamedText = false;
-    const result = await runner.run(effectivePrompt, { maxTurns: 8, maxToolCalls: 24, maxContextChars: 100_000, initialMessages: previousMessages, persistUserMessage: false, thinking,
+    const result = await runner.run(effectivePrompt, { maxTurns: 8, maxToolCalls: 24, maxContextChars: 100_000, initialMessages: previousMessages, persistUserMessage: false, thinking, goalGate: true,
       onStreamEvent: mode === 'text' && (streamOutput || onAgentEvent) ? async (event) => {
         await onAgentEvent?.(event);
         if (event.type === 'text_delta') streamedText = true;

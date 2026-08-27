@@ -4,6 +4,7 @@ import { ToolExecutor } from '../tools/executor.js';
 import { toolResultToMessage } from '../tools/types.js';
 import { compactMessages } from '../context/compactor.js';
 import { HookRegistry } from './hooks.js';
+import { evaluateGoalEvidence } from './goal-gate.js';
 
 export interface AgentRunnerDeps {
   model: ModelClient;
@@ -26,6 +27,7 @@ export class AgentRunner {
     await this.deps.hooks?.run('beforeRun', { userPrompt, turn: 0, message: messages[messages.length - 1], signal });
     if (options.persistUserMessage !== false) await this.deps.onMessage?.(messages[messages.length - 1]);
     let toolCalls = 0;
+    const toolResults = [] as import('../tools/types.js').ToolResult[];
 
     for (let turn = 0; turn < options.maxTurns; turn += 1) {
       if (signal?.aborted) return stop({ stopReason: 'user_cancelled', messages, turns: turn, toolCalls });
@@ -44,13 +46,23 @@ export class AgentRunner {
       const assistantMessage: AgentMessage = { role: 'assistant', content: assistant.text, toolCalls: assistant.toolCalls };
       messages.push(assistantMessage);
       await this.deps.onMessage?.(assistantMessage);
-      if (assistant.toolCalls.length === 0) return stop({ stopReason: 'model_finished', messages, turns: turn + 1, toolCalls });
+      if (assistant.toolCalls.length === 0) {
+        if (options.goalGate) {
+          const decision = evaluateGoalEvidence(userPrompt, toolResults);
+          if (!decision.satisfied && turn + 1 < options.maxTurns) {
+            messages.push({ role: 'user', content: `[Host verification requirement]\n${decision.reason}\nUse available tools to gather the missing evidence before finalizing.` });
+            continue;
+          }
+        }
+        return stop({ stopReason: 'model_finished', messages, turns: turn + 1, toolCalls });
+      }
       if (toolCalls + assistant.toolCalls.length > options.maxToolCalls) return stop({ stopReason: 'max_tool_calls', messages, turns: turn + 1, toolCalls });
       for (const toolCall of assistant.toolCalls) {
         await this.deps.hooks?.run('beforeTool', { userPrompt, turn, toolCall, signal });
         await options.onStreamEvent?.({ type: 'tool_call', toolCall });
       }
       const results = await this.deps.tools.executeBatch(assistant.toolCalls, signal);
+      toolResults.push(...results);
       toolCalls += results.length;
       for (const result of results) {
         await options.onStreamEvent?.({ type: 'tool_result', result });

@@ -57,6 +57,15 @@ function createRunner(model: ModelClient, hooks?: HookRegistry): AgentRunner {
     handler: (args) => args,
   });
 
+  registry.register({
+    name: 'run_command',
+    description: 'Test-only command evidence.',
+    parameters: { type: 'object', properties: {}, additionalProperties: false },
+    risk: 'read',
+    readonly: true,
+    handler: () => ({ exitCode: 0 }),
+  });
+
   return new AgentRunner({
     model,
     tools: new ToolExecutor(registry, { workspaceRoot: process.cwd() }),
@@ -94,6 +103,19 @@ describe('AgentRunner', () => {
     expect(result.stopReason).toBe('model_finished');
     expect(result.messages.map((message) => message.role)).toEqual(['user', 'assistant']);
   });
+
+  it('requires command verification before ending a fix request when GoalGate is enabled', async () => {
+    const runner = createRunner(new FakeModel([
+      assistant({ text: 'done too early' }),
+      assistant({ toolCalls: [{ id: 'verify-1', name: 'run_command', argumentsJson: '{}' }] }),
+      assistant({ text: 'verified' }),
+    ]));
+    const result = await runner.run('fix the bug and run tests', { maxTurns: 3, maxToolCalls: 2, goalGate: true });
+    expect(result.stopReason).toBe('model_finished');
+    expect(result.messages.some((message) => message.content.includes('Host verification requirement'))).toBe(true);
+    expect(result.messages.some((message) => message.role === 'tool' && message.toolCallId === 'verify-1')).toBe(true);
+  });
+
 
   it('reports context compaction through the run callback', async () => {
     const compactions: number[] = [];
