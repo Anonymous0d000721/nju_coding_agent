@@ -1,6 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { createMessageEntry, createSummaryEntry } from './entries.js';
 import type { AgentSession, CreateSessionOptions, SessionDisplayPage, SessionEntry, SessionStartEntry } from './session-types.js';
 
 export class JsonlSessionStore {
@@ -19,6 +20,7 @@ export class JsonlSessionStore {
       cwd: options.cwd,
       model: options.model,
       appVersion: options.appVersion,
+      parentSessionId: options.parentSessionId,
       name: options.name,
     };
     await this.appendLine(sessionPath, start);
@@ -45,6 +47,20 @@ export class JsonlSessionStore {
     const start = Math.max(0, boundary - limit);
     const entries = session.entries.slice(start, boundary);
     return { entries, name: sessionName(session.entries), hasMore: start > 0, nextBeforeEntryId: start > 0 ? entries[0]?.id : undefined };
+  }
+
+  async fork(sessionId: string, throughEntryId?: string): Promise<AgentSession> {
+    const parent = await this.open(sessionId);
+    const boundary = throughEntryId === undefined ? parent.entries.length : parent.entries.findIndex((entry) => entry.id === throughEntryId) + 1;
+    if (boundary < 1) throw new Error(`Unknown fork entry: ${throughEntryId}`);
+    const start = parent.entries.find((entry) => entry.type === 'session_start');
+    if (!start || start.type !== 'session_start') throw new Error(`Session file lacks session_start: ${parent.path}`);
+    const child = await this.create({ cwd: start.cwd, model: start.model, appVersion: start.appVersion, parentSessionId: parent.id, name: start.name ? `${start.name} fork` : undefined });
+    for (const entry of parent.entries.slice(1, boundary)) {
+      if (entry.type === 'message') await this.append(child.id, createMessageEntry(child.id, entry.message));
+      if (entry.type === 'summary') await this.append(child.id, createSummaryEntry(child.id, entry.summary, [], entry.reason));
+    }
+    return this.open(child.id);
   }
 
   async append(sessionId: string, entry: SessionEntry): Promise<void> {

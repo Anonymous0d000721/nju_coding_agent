@@ -14,6 +14,7 @@ export interface SessionStartEntry extends BaseSessionEntry {
   cwd: string;
   model: string;
   appVersion: string;
+  parentSessionId?: string;
   name?: string;
 }
 
@@ -63,4 +64,4 @@ export interface SessionDisplayPage {
   hasMore: boolean;
   nextBeforeEntryId?: string;
 }
-export interface CreateSessionOptions { cwd: string; model: string; appVersion: string; name?: string; }
+export interface CreateSessionOptions { cwd: string; model: string; appVersion: string; parentSessionId?: string; name?: string; }

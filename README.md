@@ -20,7 +20,7 @@ npm run dev -- --print "检查当前项目并运行测试"
 npm run dev
 ```
 
-TUI 支持多行编辑、可见光标、Markdown、流式文本、紧凑工具状态、prompt history 和 slash picker。`/resume` 会恢复最近对话并可按页加载更早历史；`/name <name>` 为当前 session 写入持久名称；`/model`、`/effort`、`/reasoning` 提供选择器。
+TUI 支持多行编辑、可见光标、Markdown、流式文本、紧凑工具状态、prompt history 和 slash picker。`/resume` 会恢复最近对话并可按页加载更早历史；`/name <name>` 为当前 session 写入持久名称；`/fork` 创建保留当前可发送上下文的新 child session；`/model`、`/effort`、`/reasoning` 提供选择器。
 
 ## 演示 fixture
 

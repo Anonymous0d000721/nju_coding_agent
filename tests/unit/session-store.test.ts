@@ -34,6 +34,18 @@ describe('JsonlSessionStore', () => {
     expect(entries).toHaveLength(1);
   });
 
+  it('forks resumable message and summary context into a child lineage', async () => {
+    const { store } = await storeFixture();
+    const parent = await store.create({ cwd: 'D:/repo', model: 'demo-model', appVersion: '0.1.0' });
+    await store.append(parent.id, createMessageEntry(parent.id, { role: 'user', content: 'original task' }));
+    const child = await store.fork(parent.id);
+    const childStart = child.entries[0];
+
+    expect(childStart).toMatchObject({ type: 'session_start', parentSessionId: parent.id });
+    expect(child.entries.filter((entry) => entry.type === 'message')).toMatchObject([{ message: { content: 'original task' } }]);
+  });
+
+
   it('derives the latest append-only session name in list and page metadata', async () => {
     const { store } = await storeFixture();
     const session = await store.create({ cwd: 'D:/repo', model: 'demo-model', appVersion: '0.1.0', name: 'initial' });
