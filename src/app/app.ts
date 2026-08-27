@@ -1,6 +1,8 @@
 import { stdout as defaultStdout } from 'node:process';
+import { randomUUID } from 'node:crypto';
 import { AgentRunner } from '../agent/runner.js';
 import { buildSystemPrompt } from '../agent/system-prompt.js';
+import { HookRegistry } from '../agent/hooks.js';
 import { createModelClient } from '../model/create-client.js';
 import { ToolExecutor } from '../tools/executor.js';
 import { ToolRegistry } from '../tools/registry.js';
@@ -13,6 +15,13 @@ import { loadConfig } from '../shared/config.js';
 import { redact } from '../shared/redact.js';
 import { JsonlSessionStore } from '../session/jsonl-store.js';
 import { createMessageEntry, createRunEndEntry, createRunStartEntry, createThinkingLevelChangeEntry } from '../session/entries.js';
+import { loadProjectInstructions } from '../context/instructions.js';
+import { SkillRegistry } from '../context/skills.js';
+import { createTodoTools } from '../plan/todo-tools.js';
+import { TelemetryStore } from '../telemetry/store.js';
+import { McpManager } from '../mcp/client.js';
+import { createStdioTransport } from '../mcp/stdio.js';
+import { registerMcpTools } from '../mcp/registry-adapter.js';
 import type { AgentMessage, AgentRunResult, AgentStreamEvent } from '../agent/types.js';
 import type { ThinkingLevel } from '../model/model-client.js';
 import { clampThinkingLevel } from '../model/thinking.js';
@@ -47,15 +56,37 @@ export function createApp(services: AppServices) {
   };
 }
 
-export async function runPrompt(config: AgentConfig, prompt: string, sessionId?: string, mode: 'text' | 'json' = 'text', thinking = config.model.thinking, streamOutput?: NodeJS.WritableStream, showThinking = false, onAgentEvent?: (event: AgentStreamEvent) => void | Promise<void>): Promise<AppResult> {
+export async function runPrompt(config: AgentConfig, prompt: string, sessionId?: string, mode: 'text' | 'json' = 'text', thinking = config.model.thinking, streamOutput?: NodeJS.WritableStream, showThinking = false, onAgentEvent?: (event: AgentStreamEvent) => void | Promise<void>, signal?: AbortSignal): Promise<AppResult> {
   if (!config.model.apiKey) return missingAuth(mode);
   const registry = new ToolRegistry();
   for (const tool of createFileTools()) registry.register(tool);
   registry.register(createShellTool());
+  for (const tool of createTodoTools(`${config.workspaceRoot}/.nju-agent/todo.json`)) registry.register(tool);
+  const mcp = new McpManager();
+  try {
+    for (const server of config.mcpServers) {
+      await mcp.connect(server.name, createStdioTransport({ command: server.command, args: server.args, cwd: server.cwd, env: server.env }));
+    }
+    registerMcpTools(mcp, registry);
+  } catch (error) {
+    await mcp.disconnectAll();
+    throw error;
+  }
   const sessionStore = config.session.enabled ? new JsonlSessionStore(`${config.workspaceRoot}/.nju-agent`) : undefined;
+  const telemetry = new TelemetryStore(`${config.workspaceRoot}/.nju-agent/logs/events.jsonl`, config.telemetry, config.model.apiKey ? [config.model.apiKey] : []);
+  const runId = randomUUID();
+  const skillRegistry = new SkillRegistry();
+  const trusted = config.trustOverride === true;
+  const skills = skillRegistry.scan(config.workspaceRoot, trusted);
+  if (trusted && skills.length > 0) registry.register(skillRegistry.createLoadTool());
+  const instructions = loadProjectInstructions(config.workspaceRoot, trusted)
+    .map((item) => `Source: ${item.path}\nTrust: ${item.trusted ? 'approved' : 'document-only'}\n${item.content}`)
+    .join('\n\n');
   const session = sessionStore ? (sessionId || config.session.id
+
     ? await sessionStore.open(sessionId ?? config.session.id!)
     : await sessionStore.create({ cwd: config.workspaceRoot, model: config.model.model, appVersion: renderVersion().trim() })) : undefined;
+  await telemetry.append({ type: 'run_start', sessionId: session?.id, runId, data: { model: config.model.model, apiFormat: config.model.apiFormat, permissionMode: config.permissionMode } });
   const previousMessages: AgentMessage[] = session?.entries.filter((entry): entry is MessageEntry => entry.type === 'message').map((entry) => entry.message) ?? [];
   const savedThinking = [...(session?.entries ?? [])].reverse().find((entry) => entry.type === 'thinking_level_change');
   if (savedThinking) thinking = { ...thinking, level: clampThinkingLevel(savedThinking.thinkingLevel as ThinkingLevel, thinking.map) };
@@ -68,8 +99,9 @@ export async function runPrompt(config: AgentConfig, prompt: string, sessionId?:
   const runner = new AgentRunner({
     model: createModelClient({ apiFormat: config.model.apiFormat, apiKey: config.model.apiKey, baseUrl: config.model.baseUrl, model: config.model.model }),
     tools: new ToolExecutor(registry, { workspaceRoot: config.workspaceRoot, permissionMode: config.permissionMode }),
-    systemPrompt: buildSystemPrompt(config.workspaceRoot),
+    systemPrompt: buildSystemPrompt(config.workspaceRoot, { instructions, skillCatalog: skillRegistry.catalog() }),
     toolDefinitions: registry.definitionsForModel(),
+    hooks: new HookRegistry(),
     onMessage: session && sessionStore ? async (message) => { await sessionStore.append(session.id, createMessageEntry(session.id, message)); } : undefined,
   });
   try {
@@ -83,14 +115,18 @@ export async function runPrompt(config: AgentConfig, prompt: string, sessionId?:
           else streamOutput.write(renderStreamEvent(event, showThinking));
         }
       } : undefined,
-    });
+    }, signal);
     if (session && sessionStore) await sessionStore.append(session.id, createRunEndEntry(session.id, result));
+    await telemetry.append({ type: 'run_end', sessionId: session?.id, runId, data: { stopReason: result.stopReason, turns: result.turns, toolCalls: result.toolCalls } });
     const rendered = mode === 'json'
       ? `${JSON.stringify({ type: 'run_end', level: 'info', data: result })}\n`
       : renderRunResult(result, !streamedText);
+    await mcp.disconnectAll();
     return { exitCode: 0, stdout: streamedText && rendered ? `\n${rendered}` : rendered, sessionId: session?.id };
   } catch (error) {
+    await mcp.disconnectAll();
     const message = redact(error instanceof Error ? error.message : String(error), { extraSecrets: [config.model.apiKey] });
+    await telemetry.append({ type: 'run_error', sessionId: session?.id, runId, data: { message } });
     return mode === 'json'
       ? { exitCode: 3, stdout: `${JSON.stringify({ type: 'run_error', level: 'error', data: { message } })}\n` }
       : { exitCode: 3, stderr: `${message}\n` };

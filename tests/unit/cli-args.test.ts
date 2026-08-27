@@ -33,6 +33,13 @@ describe('parseArgs', () => {
 });
 
 describe('loadConfig', () => {
+  it('loads opt-in MCP server configuration and rejects malformed entries', () => {
+    const args = parseArgs([]);
+    const config = loadConfig({ cwd: process.cwd(), args, env: { NJU_AGENT_MCP_SERVERS: '[{"name":"demo","command":"node","args":["server.js"]}]' } });
+    expect(config.mcpServers).toEqual([{ name: 'demo', command: 'node', args: ['server.js'], cwd: undefined, env: undefined }]);
+    expect(() => loadConfig({ cwd: process.cwd(), args, env: { NJU_AGENT_MCP_SERVERS: '{bad' } })).toThrow('Invalid NJU_AGENT_MCP_SERVERS');
+  });
+
   it('loads model config from environment without exposing secrets in shape', () => {
     const args = parseArgs(['--model', 'demo-model', '--no-session']);
     const config = loadConfig({ cwd, args, env: { NJU_AGENT_API_KEY: 'test-key', NJU_AGENT_BASE_URL: 'https://example.test/v1' } });
@@ -52,6 +59,7 @@ describe('loadConfig', () => {
     expect(config.model.model).toBe('local-model');
   });
 });
+
 
 describe('loadDotEnv', () => {
   it('parses comments, quotes, and inline comments', async () => {

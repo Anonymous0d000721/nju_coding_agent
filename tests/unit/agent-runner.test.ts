@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { toAnthropicMessages } from '../../src/model/anthropic.js';
 import { AgentRunner, trimContext } from '../../src/agent/runner.js';
+import { HookRegistry } from '../../src/agent/hooks.js';
 import type { AssistantTurn } from '../../src/agent/types.js';
 import type { ModelClient, ModelRequest } from '../../src/model/model-client.js';
 import { ToolExecutor } from '../../src/tools/executor.js';
@@ -40,7 +41,7 @@ function assistant(turn: Partial<AssistantTurn>): AssistantTurn {
   };
 }
 
-function createRunner(model: ModelClient): AgentRunner {
+function createRunner(model: ModelClient, hooks?: HookRegistry): AgentRunner {
   const registry = new ToolRegistry();
   registry.register({
     name: 'echo',
@@ -61,6 +62,7 @@ function createRunner(model: ModelClient): AgentRunner {
     tools: new ToolExecutor(registry, { workspaceRoot: process.cwd() }),
     systemPrompt: 'You are nju-agent.',
     toolDefinitions: registry.definitionsForModel(),
+    hooks,
   });
 }
 
@@ -93,6 +95,13 @@ describe('AgentRunner', () => {
     expect(result.messages.map((message) => message.role)).toEqual(['user', 'assistant']);
   });
 
+  it('runs onStop for normal completion', async () => {
+    const stops: string[] = [];
+    const hooks = new HookRegistry();
+    hooks.register({ onStop: ({ result }) => { stops.push(result.stopReason); } });
+    await createRunner(new FakeModel([assistant({ text: 'done' })]), hooks).run('hello', { maxTurns: 3, maxToolCalls: 5 });
+    expect(stops).toEqual(['model_finished']);
+  });
   it('forwards stream events and persists the complete assistant turn', async () => {
     const events: string[] = [];
     const runner = createRunner(new StreamingFakeModel());

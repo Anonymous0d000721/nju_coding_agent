@@ -11,6 +11,7 @@ export interface AgentConfig {
   trustOverride?: boolean;
   model: { apiKey?: string; baseUrl: string; model: string; apiFormat: ApiFormat; thinking: ThinkingConfig };
   session: { enabled: boolean; id?: string };
+  mcpServers: Array<{ name: string; command: string; args?: string[]; cwd?: string; env?: Record<string, string> }>;
 }
 
 export function loadConfig(input: { env: NodeJS.ProcessEnv; args: CliArgs; cwd: string }): AgentConfig {
@@ -32,7 +33,23 @@ export function loadConfig(input: { env: NodeJS.ProcessEnv; args: CliArgs; cwd: 
       thinking: { level: clampThinkingLevel(requestedLevel, thinkingMap), map: thinkingMap, format: parseThinkingFormat(envValue('NJU_AGENT_THINKING_FORMAT')), budgets: parseThinkingBudgets(envValue('NJU_AGENT_THINKING_BUDGETS')) },
     },
     session: { enabled: !input.args.noSession, id: input.args.session },
+    mcpServers: parseMcpServers(envValue('NJU_AGENT_MCP_SERVERS')),
   };
+}
+
+function parseMcpServers(value: string | undefined): AgentConfig['mcpServers'] {
+  if (!value) return [];
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (!Array.isArray(parsed)) throw new Error('must be a JSON array');
+    return parsed.map((item) => {
+      if (!item || typeof item !== 'object' || typeof (item as { name?: unknown }).name !== 'string' || typeof (item as { command?: unknown }).command !== 'string') throw new Error('each server needs string name and command');
+      const server = item as { name: string; command: string; args?: unknown; cwd?: unknown; env?: unknown };
+      if (server.args !== undefined && (!Array.isArray(server.args) || !server.args.every((arg) => typeof arg === 'string'))) throw new Error('args must be strings');
+      if (server.env !== undefined && (!server.env || typeof server.env !== 'object' || Array.isArray(server.env) || !Object.values(server.env).every((entry) => typeof entry === 'string'))) throw new Error('env must be an object of strings');
+      return { name: server.name, command: server.command, args: server.args as string[] | undefined, cwd: typeof server.cwd === 'string' ? server.cwd : undefined, env: server.env as Record<string, string> | undefined };
+    });
+  } catch (error) { throw new Error(`Invalid NJU_AGENT_MCP_SERVERS: ${error instanceof Error ? error.message : String(error)}`); }
 }
 
 export function parseApiFormat(value: string | undefined): ApiFormat {
