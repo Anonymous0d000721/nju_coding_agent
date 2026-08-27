@@ -8,6 +8,7 @@ import { ToolExecutor } from '../tools/executor.js';
 import { ToolRegistry } from '../tools/registry.js';
 import { createFileTools } from '../tools/file-tools.js';
 import { createShellTool } from '../tools/shell-tool.js';
+import { createGitTools } from '../tools/git-tools.js';
 import { parseArgs } from './cli-args.js';
 import { renderHelp, renderRunResult, renderStreamEvent, renderVersion } from './renderer.js';
 import { runTui } from './tui.js';
@@ -61,6 +62,7 @@ export async function runPrompt(config: AgentConfig, prompt: string, sessionId?:
   const registry = new ToolRegistry();
   for (const tool of createFileTools()) registry.register(tool);
   registry.register(createShellTool());
+  for (const tool of createGitTools()) registry.register(tool);
   for (const tool of createTodoTools(`${config.workspaceRoot}/.nju-agent/todo.json`)) registry.register(tool);
   const mcp = new McpManager();
   try {
