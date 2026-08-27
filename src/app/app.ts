@@ -15,7 +15,7 @@ import { runTui } from './tui.js';
 import { loadConfig } from '../shared/config.js';
 import { redact } from '../shared/redact.js';
 import { JsonlSessionStore } from '../session/jsonl-store.js';
-import { createMessageEntry, createRunEndEntry, createRunStartEntry, createThinkingLevelChangeEntry } from '../session/entries.js';
+import { createMessageEntry, createRunEndEntry, createRunStartEntry, createSummaryEntry, createThinkingLevelChangeEntry } from '../session/entries.js';
 import { loadProjectInstructions } from '../context/instructions.js';
 import { expandPromptAttachments } from '../context/attachments.js';
 import { SkillRegistry } from '../context/skills.js';
@@ -119,6 +119,10 @@ export async function runPrompt(config: AgentConfig, prompt: string, sessionId?:
           if (event.type === 'text_delta') streamOutput.write(event.delta);
           else streamOutput.write(renderStreamEvent(event, showThinking));
         }
+      } : undefined,
+      onCompaction: session && sessionStore ? async (summary, omittedMessages) => {
+        await sessionStore.append(session.id, createSummaryEntry(session.id, summary, [], 'threshold'));
+        await telemetry.append({ type: 'compaction_end', sessionId: session.id, runId, data: { omittedMessages, summary } });
       } : undefined,
     }, signal);
     if (session && sessionStore) await sessionStore.append(session.id, createRunEndEntry(session.id, result));

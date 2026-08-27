@@ -95,6 +95,19 @@ describe('AgentRunner', () => {
     expect(result.messages.map((message) => message.role)).toEqual(['user', 'assistant']);
   });
 
+  it('reports context compaction through the run callback', async () => {
+    const compactions: number[] = [];
+    const runner = createRunner(new FakeModel([assistant({ text: 'done' })]));
+    await runner.run('current', {
+      maxTurns: 1,
+      maxToolCalls: 1,
+      maxContextChars: 40,
+      initialMessages: Array.from({ length: 9 }, (_, index) => ({ role: 'user' as const, content: `${index}:${'a'.repeat(100)}` })),
+      onCompaction: (_summary, omittedMessages) => { compactions.push(omittedMessages); },
+    });
+    expect(compactions[0]).toBeGreaterThan(0);
+  });
+
   it('runs onStop for normal completion', async () => {
     const stops: string[] = [];
     const hooks = new HookRegistry();
@@ -102,6 +115,7 @@ describe('AgentRunner', () => {
     await createRunner(new FakeModel([assistant({ text: 'done' })]), hooks).run('hello', { maxTurns: 3, maxToolCalls: 5 });
     expect(stops).toEqual(['model_finished']);
   });
+
   it('forwards stream events and persists the complete assistant turn', async () => {
     const events: string[] = [];
     const runner = createRunner(new StreamingFakeModel());

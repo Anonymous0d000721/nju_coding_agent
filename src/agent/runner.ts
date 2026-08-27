@@ -29,9 +29,11 @@ export class AgentRunner {
 
     for (let turn = 0; turn < options.maxTurns; turn += 1) {
       if (signal?.aborted) return stop({ stopReason: 'user_cancelled', messages, turns: turn, toolCalls });
+      const compacted = compactMessages(messages, options.maxContextChars ?? 100_000);
+      if (compacted.compacted) await options.onCompaction?.(compacted.summary, compacted.omittedMessages);
       const request = {
         systemPrompt: this.deps.systemPrompt,
-        messages: compactMessages(messages, options.maxContextChars ?? 100_000).messages,
+        messages: compacted.messages,
         tools: this.deps.toolDefinitions,
         thinking: options.thinking,
       };
