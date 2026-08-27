@@ -1,5 +1,4 @@
-import readline from 'node:readline/promises';
-import { stdin as defaultStdin, stdout as defaultStdout } from 'node:process';
+import { stdout as defaultStdout } from 'node:process';
 import { AgentRunner } from '../agent/runner.js';
 import { buildSystemPrompt } from '../agent/system-prompt.js';
 import { createModelClient } from '../model/create-client.js';
@@ -8,12 +7,15 @@ import { ToolRegistry } from '../tools/registry.js';
 import { createFileTools } from '../tools/file-tools.js';
 import { createShellTool } from '../tools/shell-tool.js';
 import { parseArgs } from './cli-args.js';
-import { renderHelp, renderRunResult, renderVersion } from './renderer.js';
+import { renderHelp, renderRunResult, renderStreamEvent, renderVersion } from './renderer.js';
+import { runTui } from './tui.js';
 import { loadConfig } from '../shared/config.js';
 import { redact } from '../shared/redact.js';
 import { JsonlSessionStore } from '../session/jsonl-store.js';
-import { createMessageEntry, createRunEndEntry, createRunStartEntry } from '../session/entries.js';
-import type { AgentMessage, AgentRunResult } from '../agent/types.js';
+import { createMessageEntry, createRunEndEntry, createRunStartEntry, createThinkingLevelChangeEntry } from '../session/entries.js';
+import type { AgentMessage, AgentRunResult, AgentStreamEvent } from '../agent/types.js';
+import type { ThinkingLevel } from '../model/model-client.js';
+import { clampThinkingLevel } from '../model/thinking.js';
 import type { AgentConfig } from '../shared/config.js';
 import type { MessageEntry } from '../session/session-types.js';
 
@@ -25,7 +27,7 @@ export interface AppServices {
   stdout?: NodeJS.WritableStream;
 }
 
-export interface AppResult { exitCode: number; stdout?: string; stderr?: string; }
+export interface AppResult { exitCode: number; stdout?: string; stderr?: string; sessionId?: string; }
 
 export function createApp(services: AppServices) {
   return {
@@ -35,13 +37,17 @@ export function createApp(services: AppServices) {
       if (args.version) return { exitCode: 0, stdout: renderVersion() };
       const config = loadConfig({ env: services.env, args, cwd: services.cwd });
       if (args.mode === 'rpc') return { exitCode: 1, stderr: 'RPC mode is planned but not implemented yet.\n' };
-      if (!args.prompt) return runInteractive(config, services);
-      return runPrompt(config, args.prompt, undefined, args.mode);
+      if (!config.model.apiKey) return missingAuth(args.mode);
+      if (!args.prompt) {
+        if (!isInteractiveTty(services)) return { exitCode: 1, stderr: 'Interactive TUI requires a TTY. Pass a prompt or use --print/--mode json for non-interactive runs.\n' };
+        return runTui({ config, services, runPrompt });
+      }
+      return runPrompt(config, args.prompt, undefined, args.mode, config.model.thinking, args.mode === 'text' ? (services.stdout ?? defaultStdout) : undefined);
     },
   };
 }
 
-async function runPrompt(config: AgentConfig, prompt: string, sessionId?: string, mode: 'text' | 'json' = 'text'): Promise<AppResult> {
+export async function runPrompt(config: AgentConfig, prompt: string, sessionId?: string, mode: 'text' | 'json' = 'text', thinking = config.model.thinking, streamOutput?: NodeJS.WritableStream, showThinking = false, onAgentEvent?: (event: AgentStreamEvent) => void | Promise<void>): Promise<AppResult> {
   if (!config.model.apiKey) return missingAuth(mode);
   const registry = new ToolRegistry();
   for (const tool of createFileTools()) registry.register(tool);
@@ -51,6 +57,9 @@ async function runPrompt(config: AgentConfig, prompt: string, sessionId?: string
     ? await sessionStore.open(sessionId ?? config.session.id!)
     : await sessionStore.create({ cwd: config.workspaceRoot, model: config.model.model, appVersion: renderVersion().trim() })) : undefined;
   const previousMessages: AgentMessage[] = session?.entries.filter((entry): entry is MessageEntry => entry.type === 'message').map((entry) => entry.message) ?? [];
+  const savedThinking = [...(session?.entries ?? [])].reverse().find((entry) => entry.type === 'thinking_level_change');
+  if (savedThinking) thinking = { ...thinking, level: clampThinkingLevel(savedThinking.thinkingLevel as ThinkingLevel, thinking.map) };
+  if (session && sessionStore && !savedThinking) await sessionStore.append(session.id, createThinkingLevelChangeEntry(session.id, thinking.level));
   const userEntry = session ? createMessageEntry(session.id, { role: 'user', content: prompt }) : undefined;
   if (session && userEntry) {
     await sessionStore?.append(session.id, userEntry);
@@ -64,11 +73,22 @@ async function runPrompt(config: AgentConfig, prompt: string, sessionId?: string
     onMessage: session && sessionStore ? async (message) => { await sessionStore.append(session.id, createMessageEntry(session.id, message)); } : undefined,
   });
   try {
-    const result = await runner.run(prompt, { maxTurns: 8, maxToolCalls: 24, maxContextChars: 100_000, initialMessages: previousMessages, persistUserMessage: false });
+    let streamedText = false;
+    const result = await runner.run(prompt, { maxTurns: 8, maxToolCalls: 24, maxContextChars: 100_000, initialMessages: previousMessages, persistUserMessage: false, thinking,
+      onStreamEvent: mode === 'text' && (streamOutput || onAgentEvent) ? async (event) => {
+        await onAgentEvent?.(event);
+        if (event.type === 'text_delta') streamedText = true;
+        if (streamOutput) {
+          if (event.type === 'text_delta') streamOutput.write(event.delta);
+          else streamOutput.write(renderStreamEvent(event, showThinking));
+        }
+      } : undefined,
+    });
     if (session && sessionStore) await sessionStore.append(session.id, createRunEndEntry(session.id, result));
-    return { exitCode: 0, stdout: mode === 'json'
+    const rendered = mode === 'json'
       ? `${JSON.stringify({ type: 'run_end', level: 'info', data: result })}\n`
-      : renderRunResult(result) };
+      : renderRunResult(result, !streamedText);
+    return { exitCode: 0, stdout: streamedText && rendered ? `\n${rendered}` : rendered, sessionId: session?.id };
   } catch (error) {
     const message = redact(error instanceof Error ? error.message : String(error), { extraSecrets: [config.model.apiKey] });
     return mode === 'json'
@@ -77,59 +97,20 @@ async function runPrompt(config: AgentConfig, prompt: string, sessionId?: string
   }
 }
 
-async function runInteractive(config: AgentConfig, services: AppServices): Promise<AppResult> {
-  const input = services.stdin ?? defaultStdin;
-  const output = services.stdout ?? defaultStdout;
-  if (!config.model.apiKey) return missingAuth('text');
-  const rl = readline.createInterface({ input: input as NodeJS.ReadableStream, output: output as NodeJS.WritableStream, terminal: true });
-  let currentSessionId = config.session.id;
-  output.write(`nju-agent ${renderVersion().trim()}\nworkspace: ${config.workspaceRoot}\nType /help for commands.\n`);
-  try {
-    while (true) {
-      const line = (await rl.question('> ')).trim();
-      if (!line) continue;
-      if (line === '/quit' || line === '/exit') break;
-      if (line === '/help') { output.write(`${renderHelp()}\n`); continue; }
-      if (line === '/new') { currentSessionId = undefined; output.write('Started a new session.\n'); continue; }
-      if (line === '/sessions') {
-        if (!config.session.enabled) { output.write('Sessions are disabled.\n'); continue; }
-        const store = new JsonlSessionStore(`${config.workspaceRoot}/.nju-agent`);
-        const sessions = await store.list();
-        output.write(`${sessions.length ? sessions.map((item) => item.id).join('\n') : 'No sessions.'}\n`);
-        continue;
-      }
-      if (line === '/session') { output.write(`session: ${currentSessionId ?? '(new)'}\nmodel: ${config.model.model}\npermission: ${config.permissionMode}\n`); continue; }
-      if (line === '/model' || line.startsWith('/model ')) {
-        const requestedModel = line.slice('/model'.length).trim();
-        if (requestedModel) config.model.model = requestedModel;
-        output.write(`model: ${config.model.model}\n`);
-        continue;
-      }
-      if (line === '/compact') { output.write('Context compaction is not implemented.\n'); continue; }
-      if (line === '/resume' || line.startsWith('/resume ')) {
-        const requestedSession = line.slice('/resume'.length).trim();
-        if (requestedSession) currentSessionId = requestedSession;
-        else if (config.session.enabled) {
-          const store = new JsonlSessionStore(`${config.workspaceRoot}/.nju-agent`);
-          currentSessionId = (await store.list())[0]?.id;
-        }
-        output.write(`Resuming ${currentSessionId ?? '(new)'}.\n`);
-        continue;
-      }
-      const result = await runPrompt(config, line, currentSessionId);
-      if (result.stdout) output.write(result.stdout);
-      if (result.stderr) output.write(result.stderr);
-      if (currentSessionId === undefined && config.session.enabled) {
-        const store = new JsonlSessionStore(`${config.workspaceRoot}/.nju-agent`);
-        const sessions = await store.list();
-        currentSessionId = sessions[0]?.id;
-      }
-    }
-  } finally { rl.close(); }
-  return { exitCode: 0 };
+export function isThinkingLevel(value: string): value is ThinkingLevel {
+  return ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'].includes(value);
 }
 
-function missingAuth(mode: 'text' | 'json'): AppResult {
+export function supportedEffortText(config: AgentConfig): string {
+  return ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'].filter((level) => config.model.thinking.map?.[level as ThinkingLevel] !== null).join(', ');
+}
+function isInteractiveTty(services: AppServices): boolean {
+  const stdin = services.stdin as NodeJS.ReadStream | undefined;
+  const stdout = services.stdout as NodeJS.WriteStream | undefined;
+  return stdin?.isTTY === true && stdout?.isTTY === true;
+}
+
+export function missingAuth(mode: 'text' | 'json'): AppResult {
   const message = 'Missing API key. Set NJU_AGENT_API_KEY, NJU_AGENT_BASE_URL, and NJU_AGENT_MODEL. See .env.example.';
   if (mode === 'json') return { exitCode: 3, stdout: `${JSON.stringify({ type: 'run_error', level: 'error', data: { code: 'missing_auth', message } })}\n` };
   return { exitCode: 3, stderr: `${message}\n` };

@@ -28,13 +28,15 @@ npm run dev -- --print "列出当前项目的文件，并说明每个目录的�
 
 也支持 `openai-chat`、`openai-responses` 和 `anthropic` 三种协议，可用 `--api-format` 覆盖环境变量。`--json` 输出单行机器可读结果，`--no-session` 禁止持久化。
 
-不带 prompt 时进入交互模式：
+不带 prompt 时进入 Ink TUI：
 
 ```powershell
 npm run dev
 ```
 
-交互命令包括 `/help`、`/new`、`/sessions`、`/resume <id>`、`/session` 和 `/quit`。
+TUI 支持普通输入和 slash command。`/resume`、`/model`、`/effort`、`/reasoning` 无参数时打开可用上下键选择、Enter 确认、Esc 取消的 picker；带参数时走快速路径。`/thinking` 仅作为 `/reasoning` 的兼容 alias。
+
+`/effort [level]` 控制发给模型的思考强度，支持 `off`、`minimal`、`low`、`medium`、`high`、`xhigh`、`max`；`/reasoning [on|off]` 只控制是否显示流式 reasoning/thinking 文本。可通过 `NJU_AGENT_THINKING_LEVEL_MAP` 为不同模型映射 provider 参数，使用 `null` 禁用等级。
 
 ## 当前能力
 
