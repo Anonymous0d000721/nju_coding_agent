@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { toAnthropicMessages } from '../../src/model/anthropic.js';
-import { AgentRunner } from '../../src/agent/runner.js';
+import { AgentRunner, trimContext } from '../../src/agent/runner.js';
 import type { AssistantTurn } from '../../src/agent/types.js';
 import type { ModelClient, ModelRequest } from '../../src/model/model-client.js';
 import { ToolExecutor } from '../../src/tools/executor.js';
@@ -53,6 +53,25 @@ function createRunner(model: ModelClient): AgentRunner {
 }
 
 describe('AgentRunner', () => {
+  it('denies write and shell tools in strict mode without approval', async () => {
+    const registry = new ToolRegistry();
+    registry.register({ name: 'write_test', description: 'test', parameters: { type: 'object' }, risk: 'write', readonly: false, handler: () => 'should not run' });
+    const executor = new ToolExecutor(registry, { workspaceRoot: process.cwd(), permissionMode: 'strict' });
+    const [result] = await executor.executeBatch([{ id: 'p1', name: 'write_test', argumentsJson: '{}' }]);
+    expect(result.ok).toBe(false);
+    expect(result.error?.code).toBe('permission_denied');
+  });
+
+  it('bounds oversized tool observations', async () => {
+    const registry = new ToolRegistry();
+    registry.register({ name: 'large_result', description: 'test', parameters: { type: 'object' }, risk: 'read', readonly: true, handler: () => 'x'.repeat(20_000) });
+    const executor = new ToolExecutor(registry, { workspaceRoot: process.cwd() });
+    const [result] = await executor.executeBatch([{ id: 'b1', name: 'large_result', argumentsJson: '{}' }]);
+    expect(result.ok).toBe(true);
+    expect(result.truncated).toBe(true);
+    expect(result.content.length).toBeLessThan(12_100);
+  });
+
   it('stops after a plain assistant answer', async () => {
     const runner = createRunner(new FakeModel([assistant({ text: 'done' })]));
 
@@ -104,6 +123,18 @@ describe('AgentRunner', () => {
     expect(result.stopReason).toBe('model_finished');
     expect(result.messages[2]).toMatchObject({ role: 'tool', toolCallId: 'tc1' });
     expect(result.messages[2]?.content).toContain('unknown_tool');
+  });
+
+  it('trims old messages without leaving orphan tool results', () => {
+    const messages = trimContext([
+      { role: 'user', content: 'old' },
+      { role: 'assistant', content: '', toolCalls: [{ id: 'tc1', name: 'echo', argumentsJson: '{}' }] },
+      { role: 'tool', toolCallId: 'tc1', content: 'old result' },
+      { role: 'user', content: 'current request' },
+    ], 20);
+
+    expect(messages[0]?.role).not.toBe('tool');
+    expect(messages.at(-1)?.content).toBe('current request');
   });
 
   it('stops before exceeding the total tool call budget', async () => {

@@ -28,6 +28,7 @@ export function createShellTool(): ToolDefinition {
       rejectClearlyDangerous(command);
       const cwd = await resolveWorkspacePath(ctx.workspaceRoot, asString(input.cwd, '.'));
       const timeoutMs = Math.max(1, Math.min(asNumber(input.timeoutMs, DEFAULT_TIMEOUT_MS), 120_000));
+      if (ctx.signal?.aborted) throw Object.assign(new Error('Command cancelled'), { code: 'user_cancelled' });
       return runPowerShell(command, cwd.absolutePath, timeoutMs, ctx.signal);
     },
   };
@@ -47,64 +48,95 @@ interface CommandResult {
 
 async function runPowerShell(command: string, cwd: string, timeoutMs: number, signal?: AbortSignal): Promise<CommandResult> {
   const started = Date.now();
-  const executable = process.platform === 'win32' ? 'pwsh' : 'pwsh';
+  const executables = process.platform === 'win32' ? ['pwsh', 'powershell.exe'] : ['pwsh'];
+
   return await new Promise<CommandResult>((resolve, reject) => {
+    let executableIndex = 0;
     let stdout = '';
     let stderr = '';
     let truncated = false;
     let settled = false;
     let timedOut = false;
+    let cancelled = signal?.aborted ?? false;
+    let child: ReturnType<typeof spawn> | undefined;
+    let timeout: ReturnType<typeof setTimeout> | undefined;
 
-    const child = spawn(executable, ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', command], {
-      cwd,
-      shell: false,
-      windowsHide: true,
-    });
-
-    const timeout = setTimeout(() => {
-      timedOut = true;
-      child.kill();
-    }, timeoutMs);
+    const finishError = (error: unknown, code: string) => {
+      if (settled) return;
+      settled = true;
+      if (timeout) clearTimeout(timeout);
+      signal?.removeEventListener('abort', onAbort);
+      reject(Object.assign(error instanceof Error ? error : new Error(String(error)), { code }));
+    };
 
     const onAbort = () => {
-      child.kill();
+      cancelled = true;
+      child?.kill();
     };
-    signal?.addEventListener('abort', onAbort, { once: true });
 
-    child.stdout.on('data', (chunk: Buffer) => {
-      const appended = appendBounded(stdout, chunk.toString('utf8'));
-      stdout = appended.value;
-      truncated ||= appended.truncated;
-    });
-    child.stderr.on('data', (chunk: Buffer) => {
-      const appended = appendBounded(stderr, chunk.toString('utf8'));
-      stderr = appended.value;
-      truncated ||= appended.truncated;
-    });
-    child.on('error', (error) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timeout);
-      signal?.removeEventListener('abort', onAbort);
-      reject(Object.assign(error, { code: 'shell_not_found' }));
-    });
-    child.on('close', (exitCode, closeSignal) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timeout);
-      signal?.removeEventListener('abort', onAbort);
-      resolve({
-        command,
-        executable,
-        exitCode,
-        signal: closeSignal,
-        stdout: redact(stdout.trimEnd()),
-        stderr: redact(stderr.trimEnd()),
-        timedOut,
-        elapsedMs: Date.now() - started,
-        truncated,
+    const start = () => {
+      const executable = executables[executableIndex];
+      if (!executable) {
+        finishError(new Error('PowerShell executable not found (tried pwsh and powershell.exe)'), 'shell_not_found');
+        return;
+      }
+      child = spawn(executable, ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', command], {
+        cwd,
+        shell: false,
+        windowsHide: true,
       });
-    });
+      timeout = setTimeout(() => {
+        timedOut = true;
+        child?.kill();
+      }, timeoutMs);
+      child.stdout!.on('data', (chunk: Buffer) => {
+        const appended = appendBounded(stdout, chunk.toString('utf8'));
+        stdout = appended.value;
+        truncated ||= appended.truncated;
+      });
+      child.stderr!.on('data', (chunk: Buffer) => {
+        const appended = appendBounded(stderr, chunk.toString('utf8'));
+        stderr = appended.value;
+        truncated ||= appended.truncated;
+      });
+      child.once('error', (error) => {
+        if (settled) return;
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT' && executableIndex < executables.length - 1) {
+          executableIndex += 1;
+          start();
+          return;
+        }
+        finishError(error, 'shell_not_found');
+      });
+      child.once('close', (exitCode, closeSignal) => {
+        if (settled) return;
+        settled = true;
+        if (timeout) clearTimeout(timeout);
+        signal?.removeEventListener('abort', onAbort);
+        if (cancelled) {
+          reject(Object.assign(new Error('Command cancelled'), { code: 'user_cancelled' }));
+          return;
+        }
+        resolve({
+          command,
+          executable,
+          exitCode,
+          signal: closeSignal,
+          stdout: redact(stdout.trimEnd()),
+          stderr: redact(stderr.trimEnd()),
+          timedOut,
+          elapsedMs: Date.now() - started,
+          truncated,
+        });
+      });
+    };
+
+    signal?.addEventListener('abort', onAbort, { once: true });
+    if (cancelled) {
+      finishError(new Error('Command cancelled'), 'user_cancelled');
+      return;
+    }
+    start();
   });
 }
 

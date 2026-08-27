@@ -26,6 +26,42 @@ describe('run_command', () => {
     expect(result.content).toContain('exitCode');
   });
 
+  it('reports non-zero exit codes as a successful command observation', async () => {
+    const executor = await fixture();
+
+    const [result] = await executor.executeBatch([
+      { id: 'cmd2', name: 'run_command', argumentsJson: '{"command":"Write-Error failed; exit 7"}' },
+    ]);
+
+    expect(result.ok).toBe(true);
+    expect(result.content).toContain('"exitCode": 7');
+    expect(result.content).toContain('failed');
+  });
+
+  it('reports command timeouts', async () => {
+    const executor = await fixture();
+
+    const [result] = await executor.executeBatch([
+      { id: 'cmd3', name: 'run_command', argumentsJson: '{"command":"Start-Sleep -Seconds 2", "timeoutMs": 50}' },
+    ]);
+
+    expect(result.ok).toBe(true);
+    expect(result.content).toContain('"timedOut": true');
+  });
+
+  it('converts command cancellation into a recoverable result', async () => {
+    const executor = await fixture();
+    const controller = new AbortController();
+    const pending = executor.executeBatch([
+      { id: 'cmd4', name: 'run_command', argumentsJson: '{"command":"Start-Sleep -Seconds 2"}' },
+    ], controller.signal);
+    setTimeout(() => controller.abort(), 50);
+
+    const [result] = await pending;
+    expect(result.ok).toBe(false);
+    expect(result.error?.code).toBe('user_cancelled');
+  });
+
   it('rejects environment dumping by safety baseline', async () => {
     const executor = await fixture();
 

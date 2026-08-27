@@ -22,9 +22,13 @@ export interface ToolDefinition<TArgs = unknown> {
   handler: ToolHandler<TArgs>;
 }
 
+export type PermissionMode = 'yolo' | 'strict' | 'confirm';
+
 export interface ToolContext {
   workspaceRoot: string;
   signal?: AbortSignal;
+  permissionMode?: PermissionMode;
+  approve?: (tool: ToolDefinition) => Promise<boolean>;
 }
 
 export type ToolHandler<TArgs = unknown> = (args: TArgs, ctx: ToolContext) => Promise<unknown> | unknown;

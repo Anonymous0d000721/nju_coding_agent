@@ -73,3 +73,5 @@ Thumbs.db
 # nju-agent local runtime state
 .nju-agent/
 
+task_plan.md
+findings.md

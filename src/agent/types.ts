@@ -41,6 +41,9 @@ export type StopReason =
 export interface AgentRunOptions {
   maxTurns: number;
   maxToolCalls: number;
+  maxContextChars?: number;
+  initialMessages?: AgentMessage[];
+  persistUserMessage?: boolean;
 }
 
 export interface AgentRunResult {
