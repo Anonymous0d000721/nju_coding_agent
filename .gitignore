@@ -1,0 +1,71 @@
+# Local Pi agent state
+.pi/
+
+# Local reference checkouts/materials (not part of nju-agent source)
+refs/
+
+# Secrets and local configuration
+.env
+.env.*
+!.env.example
+*.local
+*.secret
+
+# Logs and runtime output
+*.log
+logs/
+*.pid
+*.seed
+*.tmp
+*.temp
+
+# Dependency directories
+node_modules/
+.venv/
+venv/
+env/
+__pypackages__/
+
+# Python caches/build artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+build/
+dist/
+*.egg-info/
+
+# JavaScript/TypeScript caches/build artifacts
+.npm/
+.pnpm-store/
+.yarn/
+.turbo/
+.next/
+.nuxt/
+coverage/
+*.tsbuildinfo
+
+# Rust build artifacts (if used)
+target/
+
+# Editor/OS noise
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Generated archives/binaries
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+*.exe
+*.dll
+*.so
+*.dylib
