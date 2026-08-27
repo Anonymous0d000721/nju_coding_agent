@@ -26,10 +26,7 @@ export interface MessageEntry extends BaseSessionEntry {
 export interface RunStartEntry extends BaseSessionEntry {
   type: 'run_start';
   userMessageId: string;
-  config: {
-    model: string;
-    permissionMode: string;
-  };
+  config: { model: string; permissionMode: string };
 }
 
 export interface RunEndEntry extends BaseSessionEntry {
@@ -40,6 +37,11 @@ export interface RunEndEntry extends BaseSessionEntry {
   errorSummary?: string;
 }
 
+export interface ThinkingLevelChangeEntry extends BaseSessionEntry {
+  type: 'thinking_level_change';
+  thinkingLevel: string;
+}
+
 export interface SummaryEntry extends BaseSessionEntry {
   type: 'summary';
   summary: string;
@@ -47,17 +49,7 @@ export interface SummaryEntry extends BaseSessionEntry {
   reason: 'manual' | 'threshold' | 'overflow';
 }
 
-export type SessionEntry = SessionStartEntry | MessageEntry | RunStartEntry | RunEndEntry | SummaryEntry;
+export type SessionEntry = SessionStartEntry | MessageEntry | RunStartEntry | RunEndEntry | ThinkingLevelChangeEntry | SummaryEntry;
 
-export interface AgentSession {
-  id: string;
-  path: string;
-  entries: SessionEntry[];
-}
-
-export interface CreateSessionOptions {
-  cwd: string;
-  model: string;
-  appVersion: string;
-  name?: string;
-}
+export interface AgentSession { id: string; path: string; entries: SessionEntry[]; }
+export interface CreateSessionOptions { cwd: string; model: string; appVersion: string; name?: string; }

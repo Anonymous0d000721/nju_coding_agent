@@ -21,19 +21,25 @@ export class AgentRunner {
 
     for (let turn = 0; turn < options.maxTurns; turn += 1) {
       if (signal?.aborted) return { stopReason: 'user_cancelled', messages, turns: turn, toolCalls };
-      const assistant = await this.deps.model.complete({
+      const request = {
         systemPrompt: this.deps.systemPrompt,
         messages: trimContext(messages, options.maxContextChars ?? 100_000),
         tools: this.deps.toolDefinitions,
-      }, signal);
+        thinking: options.thinking,
+      };
+      const assistant = this.deps.model.stream
+        ? await this.deps.model.stream(request, async (event) => { await options.onStreamEvent?.(event); }, signal)
+        : await this.deps.model.complete(request, signal);
       const assistantMessage: AgentMessage = { role: 'assistant', content: assistant.text, toolCalls: assistant.toolCalls };
       messages.push(assistantMessage);
       await this.deps.onMessage?.(assistantMessage);
       if (assistant.toolCalls.length === 0) return { stopReason: 'model_finished', messages, turns: turn + 1, toolCalls };
       if (toolCalls + assistant.toolCalls.length > options.maxToolCalls) return { stopReason: 'max_tool_calls', messages, turns: turn + 1, toolCalls };
+      for (const toolCall of assistant.toolCalls) await options.onStreamEvent?.({ type: 'tool_call', toolCall });
       const results = await this.deps.tools.executeBatch(assistant.toolCalls, signal);
       toolCalls += results.length;
       for (const result of results) {
+        await options.onStreamEvent?.({ type: 'tool_result', result });
         const toolMessage = toolResultToMessage(result);
         messages.push(toolMessage);
         await this.deps.onMessage?.(toolMessage);

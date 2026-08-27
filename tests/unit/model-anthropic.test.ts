@@ -49,10 +49,10 @@ describe('AnthropicClient', () => {
     let init: RequestInit | undefined;
     globalThis.fetch = async (_input, requestInit) => { init = requestInit; return new Response(JSON.stringify({ id: 'msg-1', content: [{ type: 'text', text: 'ok' }], stop_reason: 'end_turn' }), { status: 200 }); };
     try {
-      const turn = await new AnthropicClient({ apiKey: 'secret', baseUrl: 'https://api.anthropic.com', model: 'claude-test' }).complete({ systemPrompt: 'system', messages: [{ role: 'user', content: 'hello' }], tools: [] });
+      const turn = await new AnthropicClient({ apiKey: 'secret', baseUrl: 'https://api.anthropic.com', model: 'claude-test' }).complete({ systemPrompt: 'system', messages: [{ role: 'user', content: 'hello' }], tools: [], thinking: { level: 'high', map: { high: 'high' } } });
       const body = JSON.parse(String(init?.body));
       expect(turn.text).toBe('ok');
-      expect(body).toMatchObject({ model: 'claude-test', system: 'system', messages: [{ role: 'user', content: 'hello' }] });
+      expect(body).toMatchObject({ model: 'claude-test', system: 'system', messages: [{ role: 'user', content: 'hello' }], thinking: { type: 'adaptive' }, output_config: { effort: 'high' } });
       expect((init?.headers as Record<string, string>)['x-api-key']).toBe('secret');
     } finally { globalThis.fetch = originalFetch; }
   });

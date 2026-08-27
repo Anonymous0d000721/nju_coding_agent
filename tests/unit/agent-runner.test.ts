@@ -19,6 +19,18 @@ class FakeModel implements ModelClient {
   }
 }
 
+class StreamingFakeModel implements ModelClient {
+  complete(): Promise<AssistantTurn> { throw new Error('complete should not be called'); }
+
+  async stream(_request: ModelRequest, handler?: (event: import('../../src/model/streaming.js').ModelStreamEvent) => void | Promise<void>): Promise<AssistantTurn> {
+    await handler?.({ type: 'text_delta', delta: 'Hel' });
+    await handler?.({ type: 'text_delta', delta: 'lo' });
+    const turn = assistant({ id: 'stream-1', text: 'Hello' });
+    await handler?.({ type: 'done', turn });
+    return turn;
+  }
+}
+
 function assistant(turn: Partial<AssistantTurn>): AssistantTurn {
   return {
     id: turn.id ?? 'a1',
@@ -79,6 +91,35 @@ describe('AgentRunner', () => {
 
     expect(result.stopReason).toBe('model_finished');
     expect(result.messages.map((message) => message.role)).toEqual(['user', 'assistant']);
+  });
+
+  it('forwards stream events and persists the complete assistant turn', async () => {
+    const events: string[] = [];
+    const runner = createRunner(new StreamingFakeModel());
+    const result = await runner.run('hello', {
+      maxTurns: 3,
+      maxToolCalls: 5,
+      onStreamEvent: (event) => { if (event.type === 'text_delta') events.push(event.delta); },
+    });
+
+    expect(events).toEqual(['Hel', 'lo']);
+    expect(result.messages.at(-1)).toMatchObject({ role: 'assistant', content: 'Hello' });
+  });
+
+  it('emits complete tool lifecycle events around execution', async () => {
+    const runner = createRunner(new FakeModel([
+      assistant({ toolCalls: [{ id: 'tc1', name: 'echo', argumentsJson: '{"value":"ok"}' }] }),
+      assistant({ text: 'finished' }),
+    ]));
+    const events: string[] = [];
+
+    await runner.run('use a tool', {
+      maxTurns: 3,
+      maxToolCalls: 5,
+      onStreamEvent: (event) => { if (event.type === 'tool_call') events.push(`call:${event.toolCall.name}`); if (event.type === 'tool_result') events.push(`result:${event.result.toolName}:${event.result.ok}`); },
+    });
+
+    expect(events).toEqual(['call:echo', 'result:echo:true']);
   });
 
   it('executes tool calls and sends results into the message history', async () => {

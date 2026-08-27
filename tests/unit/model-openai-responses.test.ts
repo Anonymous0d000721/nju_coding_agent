@@ -16,11 +16,11 @@ describe('OpenAIResponsesClient', () => {
     let init: RequestInit | undefined;
     globalThis.fetch = async (input, requestInit) => { url = String(input); init = requestInit; return new Response(JSON.stringify({ id: 'resp-1', output_text: 'ok', status: 'completed' }), { status: 200 }); };
     try {
-      const turn = await new OpenAIResponsesClient({ apiKey: 'secret', baseUrl: 'https://api.openai.com/v1', model: 'gpt-test' }).complete({ systemPrompt: 'system', messages: [{ role: 'user', content: 'hello' }], tools: [] });
+      const turn = await new OpenAIResponsesClient({ apiKey: 'secret', baseUrl: 'https://api.openai.com/v1', model: 'gpt-test' }).complete({ systemPrompt: 'system', messages: [{ role: 'user', content: 'hello' }], tools: [], thinking: { level: 'high', map: { high: 'xhigh' } } });
       const body = JSON.parse(String(init?.body));
       expect(turn.text).toBe('ok');
       expect(url).toBe('https://api.openai.com/v1/responses');
-      expect(body).toMatchObject({ model: 'gpt-test', instructions: 'system', input: [{ type: 'message', role: 'user' }] });
+      expect(body).toMatchObject({ model: 'gpt-test', instructions: 'system', input: [{ type: 'message', role: 'user' }], reasoning: { effort: 'xhigh' } });
     } finally { globalThis.fetch = originalFetch; }
   });
 });

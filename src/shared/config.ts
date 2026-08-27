@@ -1,44 +1,37 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import type { ApiFormat, CliArgs } from '../app/cli-args.js';
+import type { ThinkingConfig, ThinkingLevel, ThinkingLevelMap } from '../model/model-client.js';
+import { clampThinkingLevel } from '../model/thinking.js';
 
 export interface AgentConfig {
   workspaceRoot: string;
   permissionMode: 'yolo' | 'strict' | 'confirm';
   telemetry: 'off' | 'normal' | 'debug';
   trustOverride?: boolean;
-  model: {
-    apiKey?: string;
-    baseUrl: string;
-    model: string;
-    apiFormat: ApiFormat;
-  };
-  session: {
-    enabled: boolean;
-    id?: string;
-  };
+  model: { apiKey?: string; baseUrl: string; model: string; apiFormat: ApiFormat; thinking: ThinkingConfig };
+  session: { enabled: boolean; id?: string };
 }
 
 export function loadConfig(input: { env: NodeJS.ProcessEnv; args: CliArgs; cwd: string }): AgentConfig {
   const workspaceRoot = path.resolve(input.args.cwd ?? input.cwd);
   const localEnv = loadDotEnv(path.join(workspaceRoot, '.env'));
   const envValue = (name: string): string | undefined => input.env[name] ?? localEnv[name];
-  const apiKey = envValue(input.args.apiKeyEnv);
+  const thinkingMap = parseThinkingMap(envValue('NJU_AGENT_THINKING_LEVEL_MAP'));
+  const requestedLevel = parseThinkingLevel(envValue('NJU_AGENT_THINKING_LEVEL'));
   return {
     workspaceRoot,
     permissionMode: input.args.permissionMode,
     telemetry: input.args.telemetry,
     trustOverride: input.args.approve,
     model: {
-      apiKey,
+      apiKey: envValue(input.args.apiKeyEnv),
       baseUrl: input.args.baseUrl ?? envValue('NJU_AGENT_BASE_URL') ?? 'https://api.openai.com/v1',
       model: input.args.model ?? envValue('NJU_AGENT_MODEL') ?? 'gpt-4.1-mini',
       apiFormat: input.args.apiFormat ?? parseApiFormat(envValue('NJU_AGENT_API_FORMAT')),
+      thinking: { level: clampThinkingLevel(requestedLevel, thinkingMap), map: thinkingMap, format: parseThinkingFormat(envValue('NJU_AGENT_THINKING_FORMAT')), budgets: parseThinkingBudgets(envValue('NJU_AGENT_THINKING_BUDGETS')) },
     },
-    session: {
-      enabled: !input.args.noSession,
-      id: input.args.session,
-    },
+    session: { enabled: !input.args.noSession, id: input.args.session },
   };
 }
 
@@ -48,24 +41,43 @@ export function parseApiFormat(value: string | undefined): ApiFormat {
   throw new Error(`Invalid NJU_AGENT_API_FORMAT: ${value}. Expected openai-chat, openai-responses, or anthropic`);
 }
 
+function parseThinkingLevel(value: string | undefined): ThinkingLevel {
+  const level = value ?? 'medium';
+  if (['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'].includes(level)) return level as ThinkingLevel;
+  throw new Error(`Invalid NJU_AGENT_THINKING_LEVEL: ${level}`);
+}
+function parseThinkingFormat(value: string | undefined): ThinkingConfig['format'] {
+  if (!value) return undefined;
+  if (value === 'reasoning_effort' || value === 'anthropic-adaptive' || value === 'anthropic-budget') return value;
+  throw new Error(`Invalid NJU_AGENT_THINKING_FORMAT: ${value}`);
+}
+function parseThinkingMap(value: string | undefined): ThinkingLevelMap | undefined {
+  if (!value) return undefined;
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('must be a JSON object');
+    return parsed as ThinkingLevelMap;
+  } catch (error) { throw new Error(`Invalid NJU_AGENT_THINKING_LEVEL_MAP: ${error instanceof Error ? error.message : String(error)}`); }
+}
+function parseThinkingBudgets(value: string | undefined): ThinkingConfig['budgets'] {
+  if (!value) return undefined;
+  try { return JSON.parse(value) as ThinkingConfig['budgets']; }
+  catch (error) { throw new Error(`Invalid NJU_AGENT_THINKING_BUDGETS: ${error instanceof Error ? error.message : String(error)}`); }
+}
+
 export function loadDotEnv(filePath: string): Record<string, string> {
   if (!fs.existsSync(filePath)) return {};
   const result: Record<string, string> = {};
-  const content = fs.readFileSync(filePath, 'utf8');
-  for (const rawLine of content.split(/\r?\n/)) {
+  for (const rawLine of fs.readFileSync(filePath, 'utf8').split(/\r?\n/)) {
     const line = rawLine.trim();
     if (!line || line.startsWith('#')) continue;
     const match = /^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$/.exec(line);
-    if (!match) continue;
-    result[match[1]] = unquoteEnvValue(match[2].trim());
+    if (match) result[match[1]] = unquoteEnvValue(match[2].trim());
   }
   return result;
 }
-
 function unquoteEnvValue(value: string): string {
-  if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
-    return value.slice(1, -1).replace(/\\n/g, '\n').replace(/\\r/g, '\r').replace(/\\t/g, '\t');
-  }
+  if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) return value.slice(1, -1).replace(/\\n/g, '\n').replace(/\\r/g, '\r').replace(/\\t/g, '\t');
   const hashIndex = value.indexOf(' #');
   return hashIndex >= 0 ? value.slice(0, hashIndex).trimEnd() : value;
 }
