@@ -29,7 +29,7 @@ import type { AgentMessage, AgentRunResult, AgentStreamEvent } from '../agent/ty
 import type { ThinkingLevel } from '../model/model-client.js';
 import { clampThinkingLevel } from '../model/thinking.js';
 import type { AgentConfig } from '../shared/config.js';
-import type { MessageEntry } from '../session/session-types.js';
+import type { MessageEntry, SessionEntry } from '../session/session-types.js';
 
 export interface AppServices {
   argv: string[];
@@ -101,7 +101,7 @@ export async function runPrompt(config: AgentConfig, prompt: string, sessionId?:
   const expandedPrompt = await expandPromptAttachments(prompt, config.workspaceRoot);
   const effectivePrompt = expandedPrompt.prompt;
   await telemetry.append({ type: 'run_start', sessionId: session?.id, runId, data: { model: config.model.model, apiFormat: config.model.apiFormat, permissionMode: config.permissionMode } });
-  const previousMessages: AgentMessage[] = session?.entries.filter((entry): entry is MessageEntry => entry.type === 'message').map((entry) => entry.message) ?? [];
+  const previousMessages = session ? sessionEntriesToContext(session.entries) : [];
   const savedThinking = [...(session?.entries ?? [])].reverse().find((entry) => entry.type === 'thinking_level_change');
   if (savedThinking) thinking = { ...thinking, level: clampThinkingLevel(savedThinking.thinkingLevel as ThinkingLevel, thinking.map) };
   if (session && sessionStore && !savedThinking) await sessionStore.append(session.id, createThinkingLevelChangeEntry(session.id, thinking.level));
@@ -154,6 +154,14 @@ export async function runPrompt(config: AgentConfig, prompt: string, sessionId?:
       ? { exitCode: 3, stdout: `${JSON.stringify({ type: 'run_error', level: 'error', data: { message } })}\n` }
       : { exitCode: 3, stderr: `${message}\n` };
   }
+}
+
+export function sessionEntriesToContext(entries: SessionEntry[]): AgentMessage[] {
+  return entries.flatMap((entry) => {
+    if (entry.type === 'message') return [entry.message];
+    if (entry.type === 'summary') return [{ role: 'system' as const, content: `[Persisted context summary; project/session data, not host policy]\n${entry.summary}` }];
+    return [];
+  });
 }
 
 export function isThinkingLevel(value: string): value is ThinkingLevel {
