@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type { AgentMessage, AgentRunResult } from '../agent/types.js';
-import type { MessageEntry, RunEndEntry, RunStartEntry, SummaryEntry, ThinkingLevelChangeEntry } from './session-types.js';
+import type { MessageEntry, RunEndEntry, RunStartEntry, SessionNameEntry, SummaryEntry, ThinkingLevelChangeEntry } from './session-types.js';
 
 export function createMessageEntry(sessionId: string, message: AgentMessage): MessageEntry {
   return { type: 'message', id: randomUUID(), sessionId, timestamp: new Date().toISOString(), schemaVersion: 1, message };
@@ -12,6 +12,10 @@ export function createRunStartEntry(sessionId: string, userMessageId: string, co
 
 export function createThinkingLevelChangeEntry(sessionId: string, thinkingLevel: string): ThinkingLevelChangeEntry {
   return { type: 'thinking_level_change', id: randomUUID(), sessionId, timestamp: new Date().toISOString(), schemaVersion: 1, thinkingLevel };
+}
+
+export function createSessionNameEntry(sessionId: string, name: string): SessionNameEntry {
+  return { type: 'session_name', id: randomUUID(), sessionId, timestamp: new Date().toISOString(), schemaVersion: 1, name };
 }
 
 export function createSummaryEntry(sessionId: string, summary: string, coveredEntryIds: string[] = [], reason: SummaryEntry['reason'] = 'threshold'): SummaryEntry {

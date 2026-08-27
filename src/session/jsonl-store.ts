@@ -44,7 +44,7 @@ export class JsonlSessionStore {
     if (boundary < 0) throw new Error(`Unknown session history cursor: ${options.beforeEntryId}`);
     const start = Math.max(0, boundary - limit);
     const entries = session.entries.slice(start, boundary);
-    return { entries, hasMore: start > 0, nextBeforeEntryId: start > 0 ? entries[0]?.id : undefined };
+    return { entries, name: sessionName(session.entries), hasMore: start > 0, nextBeforeEntryId: start > 0 ? entries[0]?.id : undefined };
   }
 
   async append(sessionId: string, entry: SessionEntry): Promise<void> {
@@ -53,7 +53,7 @@ export class JsonlSessionStore {
     await this.appendLine(this.sessionPath(sessionId), entry);
   }
 
-  async list(): Promise<Array<{ id: string; path: string; mtimeMs: number }>> {
+  async list(): Promise<Array<{ id: string; path: string; mtimeMs: number; name?: string }>> {
     const sessionsDir = path.join(this.rootDir, 'sessions');
     try {
       const files = await fs.readdir(sessionsDir, { withFileTypes: true });
@@ -62,7 +62,8 @@ export class JsonlSessionStore {
         .map(async (file) => {
           const sessionPath = path.join(sessionsDir, file.name);
           const stat = await fs.stat(sessionPath);
-          return { id: file.name.slice(0, -'.jsonl'.length), path: sessionPath, mtimeMs: stat.mtimeMs };
+          const entries = parseSessionJsonl(await fs.readFile(sessionPath, 'utf8'), sessionPath);
+          return { id: file.name.slice(0, -'.jsonl'.length), path: sessionPath, mtimeMs: stat.mtimeMs, name: sessionName(entries) };
         }));
       return summaries.sort((a, b) => b.mtimeMs - a.mtimeMs);
     } catch (error) {
@@ -78,6 +79,13 @@ export class JsonlSessionStore {
   private async appendLine(filePath: string, entry: SessionEntry): Promise<void> {
     await fs.appendFile(filePath, `${JSON.stringify(entry)}\n`, 'utf8');
   }
+}
+
+export function sessionName(entries: SessionEntry[]): string | undefined {
+  const renamed = [...entries].reverse().find((entry) => entry.type === 'session_name');
+  if (renamed?.type === 'session_name') return renamed.name;
+  const start = entries.find((entry) => entry.type === 'session_start');
+  return start?.type === 'session_start' ? start.name : undefined;
 }
 
 export function parseSessionJsonl(content: string, source = '<memory>'): SessionEntry[] {

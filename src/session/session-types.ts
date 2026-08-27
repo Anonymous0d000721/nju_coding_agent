@@ -42,6 +42,11 @@ export interface ThinkingLevelChangeEntry extends BaseSessionEntry {
   thinkingLevel: string;
 }
 
+export interface SessionNameEntry extends BaseSessionEntry {
+  type: 'session_name';
+  name: string;
+}
+
 export interface SummaryEntry extends BaseSessionEntry {
   type: 'summary';
   summary: string;
@@ -49,11 +54,12 @@ export interface SummaryEntry extends BaseSessionEntry {
   reason: 'manual' | 'threshold' | 'overflow';
 }
 
-export type SessionEntry = SessionStartEntry | MessageEntry | RunStartEntry | RunEndEntry | ThinkingLevelChangeEntry | SummaryEntry;
+export type SessionEntry = SessionStartEntry | MessageEntry | RunStartEntry | RunEndEntry | ThinkingLevelChangeEntry | SessionNameEntry | SummaryEntry;
 
 export interface AgentSession { id: string; path: string; entries: SessionEntry[]; }
 export interface SessionDisplayPage {
   entries: SessionEntry[];
+  name?: string;
   hasMore: boolean;
   nextBeforeEntryId?: string;
 }

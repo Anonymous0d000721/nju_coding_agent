@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { JsonlSessionStore, parseSessionJsonl } from '../../src/session/jsonl-store.js';
-import { createMessageEntry, createRunEndEntry, createRunStartEntry } from '../../src/session/entries.js';
+import { createMessageEntry, createRunEndEntry, createRunStartEntry, createSessionNameEntry } from '../../src/session/entries.js';
 
 async function storeFixture() {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'nju-agent-session-'));
@@ -34,6 +34,14 @@ describe('JsonlSessionStore', () => {
     expect(entries).toHaveLength(1);
   });
 
+  it('derives the latest append-only session name in list and page metadata', async () => {
+    const { store } = await storeFixture();
+    const session = await store.create({ cwd: 'D:/repo', model: 'demo-model', appVersion: '0.1.0', name: 'initial' });
+    await store.append(session.id, createSessionNameEntry(session.id, 'renamed'));
+
+    expect((await store.list())[0]?.name).toBe('renamed');
+    expect((await store.readDisplayPage(session.id)).name).toBe('renamed');
+  });
   it('loads recent entries in chronological pages and tolerates a damaged tail', async () => {
     const { store } = await storeFixture();
     const session = await store.create({ cwd: 'D:/repo', model: 'demo-model', appVersion: '0.1.0' });
