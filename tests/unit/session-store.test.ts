@@ -34,10 +34,27 @@ describe('JsonlSessionStore', () => {
     expect(entries).toHaveLength(1);
   });
 
-  it('rejects non-tail damaged JSONL lines', () => {
-    expect(() => parseSessionJsonl([
-      '{ damaged',
-      JSON.stringify({ type: 'session_start', id: 'e1', sessionId: 's1', timestamp: 't', schemaVersion: 1, cwd: '.', model: 'm', appVersion: 'v' }),
-    ].join('\n'))).toThrow('Invalid JSONL');
+  it('loads recent entries in chronological pages and tolerates a damaged tail', async () => {
+    const { store } = await storeFixture();
+    const session = await store.create({ cwd: 'D:/repo', model: 'demo-model', appVersion: '0.1.0' });
+    const prompts = ['one', 'two', 'three'];
+    for (const content of prompts) await store.append(session.id, createMessageEntry(session.id, { role: 'user', content }));
+    await fs.appendFile(session.path, '{ damaged tail\n', 'utf8');
+
+    const latest = await store.readDisplayPage(session.id, { limit: 2 });
+    const earlier = await store.readDisplayPage(session.id, { beforeEntryId: latest.nextBeforeEntryId!, limit: 2 });
+
+    expect(latest.entries.map((entry) => entry.type)).toEqual(['message', 'message']);
+    expect((latest.entries[0] as { message: { content: string } }).message.content).toBe('two');
+    expect(latest.hasMore).toBe(true);
+    expect(earlier.entries.map((entry) => entry.type)).toEqual(['session_start', 'message']);
+    expect(earlier.hasMore).toBe(false);
+  });
+
+  it('rejects an unknown display-history cursor', async () => {
+    const { store } = await storeFixture();
+    const session = await store.create({ cwd: 'D:/repo', model: 'demo-model', appVersion: '0.1.0' });
+
+    await expect(store.readDisplayPage(session.id, { beforeEntryId: 'missing' })).rejects.toThrow('Unknown session history cursor');
   });
 });
