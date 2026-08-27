@@ -17,6 +17,7 @@ import { redact } from '../shared/redact.js';
 import { JsonlSessionStore } from '../session/jsonl-store.js';
 import { createMessageEntry, createRunEndEntry, createRunStartEntry, createThinkingLevelChangeEntry } from '../session/entries.js';
 import { loadProjectInstructions } from '../context/instructions.js';
+import { expandPromptAttachments } from '../context/attachments.js';
 import { SkillRegistry } from '../context/skills.js';
 import { createTodoTools } from '../plan/todo-tools.js';
 import { TelemetryStore } from '../telemetry/store.js';
@@ -88,12 +89,14 @@ export async function runPrompt(config: AgentConfig, prompt: string, sessionId?:
 
     ? await sessionStore.open(sessionId ?? config.session.id!)
     : await sessionStore.create({ cwd: config.workspaceRoot, model: config.model.model, appVersion: renderVersion().trim() })) : undefined;
+  const expandedPrompt = await expandPromptAttachments(prompt, config.workspaceRoot);
+  const effectivePrompt = expandedPrompt.prompt;
   await telemetry.append({ type: 'run_start', sessionId: session?.id, runId, data: { model: config.model.model, apiFormat: config.model.apiFormat, permissionMode: config.permissionMode } });
   const previousMessages: AgentMessage[] = session?.entries.filter((entry): entry is MessageEntry => entry.type === 'message').map((entry) => entry.message) ?? [];
   const savedThinking = [...(session?.entries ?? [])].reverse().find((entry) => entry.type === 'thinking_level_change');
   if (savedThinking) thinking = { ...thinking, level: clampThinkingLevel(savedThinking.thinkingLevel as ThinkingLevel, thinking.map) };
   if (session && sessionStore && !savedThinking) await sessionStore.append(session.id, createThinkingLevelChangeEntry(session.id, thinking.level));
-  const userEntry = session ? createMessageEntry(session.id, { role: 'user', content: prompt }) : undefined;
+  const userEntry = session ? createMessageEntry(session.id, { role: 'user', content: effectivePrompt }) : undefined;
   if (session && userEntry) {
     await sessionStore?.append(session.id, userEntry);
     await sessionStore?.append(session.id, createRunStartEntry(session.id, userEntry.id, { model: config.model.model, permissionMode: config.permissionMode }));
@@ -108,7 +111,7 @@ export async function runPrompt(config: AgentConfig, prompt: string, sessionId?:
   });
   try {
     let streamedText = false;
-    const result = await runner.run(prompt, { maxTurns: 8, maxToolCalls: 24, maxContextChars: 100_000, initialMessages: previousMessages, persistUserMessage: false, thinking,
+    const result = await runner.run(effectivePrompt, { maxTurns: 8, maxToolCalls: 24, maxContextChars: 100_000, initialMessages: previousMessages, persistUserMessage: false, thinking,
       onStreamEvent: mode === 'text' && (streamOutput || onAgentEvent) ? async (event) => {
         await onAgentEvent?.(event);
         if (event.type === 'text_delta') streamedText = true;
