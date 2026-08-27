@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { McpManager, safeMcpName, type McpTransport } from '../../src/mcp/client.js';
+import { createStdioTransport } from '../../src/mcp/stdio.js';
 import { registerMcpTools } from '../../src/mcp/registry-adapter.js';
 import { ToolRegistry } from '../../src/tools/registry.js';
 
@@ -8,6 +9,14 @@ function transport(): McpTransport {
 }
 
 describe('McpManager', () => {
+  it('talks to the dependency-free mock stdio server', async () => {
+    const transport = createStdioTransport({ command: process.execPath, args: ['examples/mock-mcp-server.mjs'], cwd: process.cwd() });
+    const manager = new McpManager();
+    await manager.connect('demo', transport);
+    const tool = manager.definitions()[0];
+    await expect(tool?.handler({ text: 'hello' }, {} as never)).resolves.toEqual([{ type: 'text', text: 'hello' }]);
+    await manager.disconnectAll();
+  });
   it('initializes, discovers and calls a normalized external tool', async () => {
     const manager = new McpManager();
     await manager.connect('Demo Server', transport());

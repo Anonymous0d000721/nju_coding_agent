@@ -789,11 +789,18 @@ docs: finalize usage guide and demo scenario
 
 ## 15. 当前状态
 
-- [x] 已阅读题目，确认 TypeScript/Node + OpenAI-compatible API 的方向。
-- [x] 已对 `refs/` 中 Pi、pi-minimal-doc、渐进 harness 教程、中文 Agent 总结、SJTU agent 架构做广泛浏览并提炼原则。
-- [x] 已完成架构、阶段、测试、合规、演示和答辩计划。
-- [x] 已创建首批核心 spec：`specs/01-agent-loop.md` 至 `specs/07-cli-ux.md`，并在每份 spec 中标注 `Assignment.md` / `refs/` 参考来源。
-- [ ] Phase A：初始化新公开 Git 仓库与 TypeScript CLI 地基。
-- [ ] Phase B：自建 tool-calling agent loop。
-- [ ] Phase C：本地工具与权限。
-- [ ] Phase D–I：依本计划逐项推进。
+截至当前实现检查：
+
+- [x] Phase A：TypeScript/Node CLI、配置、错误处理、Vitest、README、CI 与安全 gitignore。
+- [x] Phase B：自建 AgentRunner、三种模型协议、tool calling、streaming、取消和配对错误处理。
+- [x] Phase C：工作区文件/搜索/PowerShell 工具、路径保护、权限模式、输出限制和 redaction。
+- [x] Phase D：JSONL session、交互命令、resume、上下文恢复和 TUI 历史 hydration。
+- [x] Phase E：项目 instructions、catalog-first Skills、`load_skill`、lifecycle hooks 与有界 compaction 基础。
+- [x] Phase F 基础：结构化 todo、run evidence telemetry、stop 生命周期和可复现 demo fixture。
+- [x] Phase G 基础：opt-in MCP stdio JSON-RPC、initialize/tools/list/tools/call、命名冲突检测、host registry/policy 边界。
+- [x] Phase I 文档基础：README、architecture、decisions、threat-model、CI；README 汉字数符合 Assignment 约束。
+- [x] TUI：参考 Pi/Claude Code 完成可见光标、多行编辑、Markdown、语义 transcript、picker、取消、resume 历史分页。
+- [ ] 完整 MCP demo server、完整 context compaction/summary lifecycle、GoalGate、复杂 session tree/fork、subagent/worktree/background workflow。
+- [ ] 用户侧交付：创建并填写题目发布后新建的公开 GitHub/Gitee 仓库地址，录制不超过 2 分钟且不超过 200 MB 的 MP4，并按要求打包提交。
+
+代码验证：`npm run typecheck`、`npm test -- --run`（18 files / 71 tests）、`npm run build`、`git diff --check` 均通过；工作区已清洁并保留功能切片提交历史。
