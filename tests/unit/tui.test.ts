@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { applyAgentEvent, sessionEntriesToTuiMessages, type TuiMessage } from '../../src/app/tui.js';
+import { applyAgentEvent, messagePresentation, sessionEntriesToTuiMessages, type TuiMessage } from '../../src/app/tui.js';
 import type { SessionEntry } from '../../src/session/session-types.js';
 import type { AgentStreamEvent } from '../../src/agent/types.js';
 
@@ -56,6 +56,13 @@ describe('TUI event rendering', () => {
       { role: 'system', text: 'ready' },
       { role: 'tool', text: 'read_file · completed', ok: true, toolCallId: 'call-1' },
     ]);
+  });
+
+  it('uses foreground markers instead of transcript background blocks', () => {
+    expect(messagePresentation({ role: 'user', text: 'prompt' })).toEqual({ color: 'green', marker: '› ', dim: false });
+    expect(messagePresentation({ role: 'assistant', text: 'answer' })).toEqual({ color: 'white', marker: '' });
+    expect(messagePresentation({ role: 'tool', text: 'failed', ok: false })).toEqual({ color: 'red', marker: '• ' });
+    expect(messagePresentation({ role: 'thinking', text: 'reasoning' })).toEqual({ color: 'gray', marker: '· ', dim: true });
   });
 
   it('rebuilds persisted conversation and tool status for session hydration', () => {

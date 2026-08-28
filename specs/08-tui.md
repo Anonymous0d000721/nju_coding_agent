@@ -98,33 +98,86 @@ TUI 可以持有界面状态，但不得持有或复制 agent loop 状态。所�
 
 第一版采用 regular mode，不要求 fullscreen/alternate screen；若 Ink 默认使用差分渲染即可，不自行实现 ANSI diff。
 
-从上到下：
+布局的核心是连续阅读与直接输入，而不是堆叠多个带框 panel。除可选 Header 外，主区域从上到下必须严格为：
 
-1. **Header**
-   - 单行、低对比度的 app/version、workspace 与当前 session short id；仅在启动、切换 session 或发生明确状态变化时更新。
-   - 不是大边框卡片，不重复展示可在 footer/status 获取的信息；窄终端按优先级截断 workspace，再截断 session id。
+```text
+Transcript
+Editor
+Widget Area
+Status Bar
+```
+
+```text
+[可选：单行、低干扰 Header]
+
+Transcript（占据剩余的主要高度；无外框；底部留白）
+
+┌────────────────────────────────────────────┐
+│ Editor（唯一默认有外框的区域；无内部 padding）│
+└────────────────────────────────────────────┘
+Widget Area（按需出现；无外框、无 padding）
+Status Bar（固定单行；无外框、无上下 padding）
+```
+
+### 6.1 区域顺序与尺寸
+
+1. **可选 Header**
+   - Header 位于四个主区域之前，不属于主交互布局；它只能是单行、低对比度的 app/version、workspace 与当前 session short id。
+   - 仅在启动、切换 session 或发生明确状态变化时更新；不是大边框卡片，也不得重复 Status Bar 可展示的信息。
+   - 窄终端按优先级截断 workspace，再截断 session id。P0 可省略 Header。
 2. **Transcript**
-   - 以连续阅读流呈现，不给每条消息套完整边框；只在语义需要分组或强调时使用左侧缩进、1 行留白、颜色或背景。
-   - 用户 prompt 为窄的强调背景块，文本允许换行但不显示角色标签；相邻用户 prompt 不应合并。
-   - assistant 主文本为无背景或极弱中性背景的 Markdown 阅读区，使用固定左右 padding 和段落间距；不能把每个 token/delta 变成单独块。
-   - reasoning 关闭时不占行；开启时使用低对比度、斜体且可折叠的次级区域，不能与 assistant 正文或错误同色。
-   - tool execution 只使用紧凑单行或少数多行活动块：pending、success、error 必须各自有状态色；正常 completion 默认只显示工具名、结果状态、耗时和必要的修改摘要，不显示参数或完整输出。
-   - system/notice 使用低对比度文本而不是彩色大卡片；错误、权限拒绝、取消和模型中断使用不同的语义色与简短说明。
+   - 是默认占据剩余可用高度的主体区域；内容不足时不强制撑满视觉卡片。
+   - 必须位于 Editor 之前，且自身**没有外框**、没有独立 panel 边界。
+   - 作为连续阅读流呈现，不给每条 message、每个 tool call 或每个 delta 套完整边框/卡片。
+   - 区域底部必须保留至少一行的视觉留白（bottom padding），使最后一条 transcript 内容不紧贴 Editor 边框；此留白属于 Transcript，不得以 Editor 的上内边距替代。
    - transcript 连续区的最大可见项目数、分页 marker 与滚动锚点由 state 管理；不得用 `slice(-N)` 静默丢弃 UI 已加载的会话历史。
-   - assistant、reasoning 与系统文本支持安全的终端 Markdown 渲染（标题、段落、强调、行内 code、code block、列表、引用、链接文本）；未知/不支持语法必须回退为原文，绝不输出原始 HTML 或不受控 ANSI。
-3. **Widget area**
-   - `/resume`、`/model`、`/effort`、`/reasoning` 的 picker；
-   - 当 editor 当前文本以 `/` 开头且不存在 picker 时，显示 slash-command completion 菜单；
-   - picker 或 completion 菜单打开时拥有键盘焦点。
-4. **Editor**
-   - 多行输入，必须有可见光标；
-   - Enter 提交；使用 `Shift+Enter` 或 `Ctrl+J` 插入换行（最终选择一个并在 help 中固定）；
+3. **Editor**
+   - 紧跟 Transcript，是唯一默认带稳定可见外框的主区域。
+   - Editor **没有内部 padding**：输入首行/末行不应额外空出内容内边距；边框与终端 cell 的必要间隔由 renderer 的边框实现处理，不另叠加布局 padding。
+   - 多行输入，必须有可见光标；Enter 提交；使用 `Shift+Enter` 或 `Ctrl+J` 插入换行（最终选择一个并在 help 中固定）。
    - 运行中可先禁用提交或显示 busy，后续再做 message queue。
-5. **Status bar（位于 editor 下方）**
-   - workspace、api format、model、effort、session id 或 `(new)`、permission mode、reasoning display、run status；
-   - 可附紧凑 key hint，如 `Enter send · Shift+Enter newline · Esc cancel`。
+4. **Widget Area**
+   - 必须位于 Editor 下方、Status Bar 上方；不使用时高度为 0，不留下空白占位。
+   - 无外框、无 padding；不得形成常驻 panel。
+   - 用于 `/resume`、`/model`、`/effort`、`/reasoning` 的 picker，以及 editor 当前文本以 `/` 开头且不存在 picker 时的 slash-command completion 菜单。
+   - picker 或 completion 菜单打开时拥有键盘焦点。
+5. **Status Bar**
+   - 固定在最下方，位于 Widget Area 下方。
+   - 无外框、无上下 padding；默认恰好一行高。
+   - 展示 workspace、api format、model、effort、session id 或 `(new)`、permission mode、reasoning display、run status；可附紧凑 key hint，如 `Enter send · Shift+Enter newline · Esc cancel`。
+   - 宽度不足时按优先级裁剪信息，不允许换行为第二个 status panel。
 
-### 6.1 运行中输入与取消
+### 6.2 Transcript 内容规则
+
+- 用户 prompt、assistant 主文本、reasoning、tool activity、system notice 与 error 都属于同一个无框连续阅读流；语义分组优先使用留白、前景色、字重、缩进或左侧 marker，而不是卡片边框。
+- 用户 prompt 文本允许换行、不显示冗余角色标签；相邻用户 prompt 不应合并。
+- assistant 主文本为无背景的 Markdown 阅读内容，使用段落间距；不能把每个 token/delta 变成单独块。
+- reasoning 关闭时不占行；开启时使用低对比度、斜体且可折叠的次级文本，不能与 assistant 正文或错误同色。
+- tool execution 使用紧凑单行或少数多行活动记录；pending、success、error 使用语义前景色或 marker。正常 completion 默认只显示工具名、结果状态、耗时和必要修改摘要，不显示参数或完整输出。
+- system/notice 使用低对比度文本而不是彩色大卡片；错误、权限拒绝、取消和模型中断使用不同的语义前景色与简短说明。
+- assistant、reasoning 与系统文本支持安全的终端 Markdown 渲染（标题、段落、强调、行内 code、code block、列表、引用、链接文本）；未知/不支持语法必须回退为原文，绝不输出原始 HTML 或不受控 ANSI。
+
+### 6.3 边框、padding 与背景色
+
+边框和背景是稀缺的层级信号，默认克制使用：
+
+| 区域/元素 | 外框 | Padding | 背景色 |
+|---|---|---|---|
+| Transcript | 禁止 | 仅底部保留视觉留白 | 默认无背景；若使用，必须覆盖完整语义区域。 |
+| Editor | 必须 | 禁止内部 padding | 可为整个 Editor 使用统一背景，也可无背景。 |
+| Widget Area | 禁止 | 禁止 | 默认无背景；picker/completion 可对完整菜单区域或完整选中行使用背景。 |
+| Status Bar | 禁止 | 禁止上下 padding | 可为整个单行 Status Bar 使用统一背景，也可无背景。 |
+| 单条 Transcript 文本 / 单个 token / 单个词 | 禁止 | 不适用 | 禁止单独使用背景色。 |
+
+具体规则：
+
+- 背景色只能施加到完整、连续的视觉区域：整个 Editor、整个 Status Bar、完整 widget/menu、完整 selected row，或确有完整语义边界的完整内容块。
+- 不得只给单个文字、单个 token、命令名称、状态词或按钮词套背景色；禁止使用零碎的 `allow`、`deny`、`error` 等词级色块制造视觉噪声。
+- 要强调状态时，优先使用前景色、bold、dim、underline、图标或左侧 marker；焦点优先通过完整选中行而不是 token 背景表达。
+- 如果某区域不使用统一背景，就保持透明/终端默认背景；不得用碎片化背景色模拟层级。
+- 所有颜色都必须在低色彩终端下降级为字重、文本或 marker，不能只依赖颜色传达 pending/success/error/focus 等状态。
+
+### 6.4 运行中输入与取消
 
 v1 不实现 steering 或 follow-up queue，且每次只允许一个 active run：
 
@@ -326,7 +379,7 @@ Editor 是多行文本编辑器，不得把输入简化为只会 append/backspac
 当 editor 文本第一个字符为 `/` 且没有显式 picker 时，显示命令候选菜单。第一版采用**大小写不敏感前缀匹配**：例如 `/re` 匹配 `/resume` 与 `/reasoning`；没有匹配时隐藏菜单，不阻塞普通输入。
 
 - 候选包含命令名和一行用途，至少覆盖第 9.1 节命令总表；
-- completion 选中项必须有明显背景色；
+- completion 选中项必须以完整选中行的明显背景色表达焦点；不得只给候选命令中的单个词加背景色；
 - Up/Down 在 completion 打开时移动候选，不进入 editor/history 导航；
 - Tab 或 Enter 接受选中候选，替换 editor 中的命令 token，并将光标置于命令末尾；
 - Esc 关闭 completion，保留 editor 原文；

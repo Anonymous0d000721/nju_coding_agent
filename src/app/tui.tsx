@@ -173,7 +173,6 @@ function TuiApp({ config, runPrompt }: TuiOptions) {
         setStatus('idle');
       } else {
         if (result.stderr) appendError(result.stderr.trim());
-        if (result.stdout?.trim()) appendSystem(result.stdout.trim());
         setStatus(result.exitCode === 0 ? 'idle' : 'error');
       }
     } catch (error) { if (signal.signal.aborted) { append({ role: 'cancelled', text: 'Run interrupted.' }); setStatus('idle'); } else appendError(asMessage(error)); }
@@ -204,25 +203,49 @@ function TuiApp({ config, runPrompt }: TuiOptions) {
     if (value && !key.ctrl && !key.meta) updateEditor((state) => insertText(state, value));
   });
 
+  const busy = status === 'hydrating' || status === 'running' || status === 'cancelling';
+  const statusColor = status === 'error' ? 'red' : busy ? 'yellow' : 'gray';
+  const statusText = `api ${config.model.apiFormat} · model ${config.model.model} · effort ${config.model.thinking.level} · session ${sessionId ?? '(new)'} · permission ${config.permissionMode} · reasoning ${showReasoning ? 'on' : 'off'} · ${status} · Ctrl+J newline · Esc cancel`;
+
   return <Box flexDirection="column">
-    <Box borderStyle="round" paddingX={1}><Text color="cyan">nju-agent · {config.workspaceRoot}</Text></Box>
-    <Box flexDirection="column" marginTop={1}>{historyHasMore ? <Text color="gray">↑ Earlier history available · PageUp to load</Text> : null}{messages.map((message, index) => <MessageLine key={`${message.role}-${index}`} message={message} />)}</Box>
+    <Text color="gray" dimColor>nju-agent · {config.workspaceRoot}</Text>
+    <Box flexDirection="column" flexGrow={1} marginBottom={1}>
+      {historyHasMore ? <Text color="gray">↑ Earlier history available · PageUp to load</Text> : null}
+      {messages.map((message, index) => <MessageLine key={`${message.role}-${index}`} message={message} />)}
+    </Box>
+    <EditorView editor={editor} busy={busy} />
     {picker ? <PickerView picker={picker} /> : completion.length ? <CompletionView items={completion} selectedIndex={completionIndex} /> : null}
-    <EditorView editor={editor} busy={status === 'hydrating' || status === 'running' || status === 'cancelling'} />
-    <Box borderStyle="single" paddingX={1}><Text color={status === 'error' ? 'red' : status === 'hydrating' || status === 'running' || status === 'cancelling' ? 'yellow' : 'gray'}>api {config.model.apiFormat} · model {config.model.model} · effort {config.model.thinking.level} · session {sessionId ?? '(new)'} · permission {config.permissionMode} · reasoning {showReasoning ? 'on' : 'off'} · {status} · Ctrl+J newline · Esc cancel</Text></Box>
+    <Text color={statusColor} wrap="truncate">{statusText}</Text>
   </Box>;
 }
 
 function EditorView({ editor, busy }: { editor: EditorState; busy: boolean }) {
   const before = editor.text.slice(0, editor.cursorOffset); const boundary = graphemeBoundaries(editor.text).find((offset) => offset > editor.cursorOffset) ?? editor.text.length; const at = editor.text.slice(editor.cursorOffset, boundary); const after = editor.text.slice(boundary);
-  return <Box marginTop={1} borderStyle="round" paddingX={1}><Text color={busy ? 'yellow' : 'green'}>{busy ? '… ' : '> '}</Text><Text>{before}</Text><Text inverse>{at || ' '}</Text><Text>{after}</Text></Box>;
+  return <Box borderStyle="round"><Text color={busy ? 'yellow' : 'green'}>{busy ? '… ' : '> '}</Text><Text>{before}</Text><Text underline bold>{at || ' '}</Text><Text>{after}</Text></Box>;
 }
-function CompletionView({ items, selectedIndex }: { items: readonly { name: string; description: string }[]; selectedIndex: number }) { return <Box flexDirection="column" borderStyle="single" paddingX={1}><Text color="cyan">commands · ↑/↓ choose · Tab/Enter accept · Esc cancel</Text>{items.map((item, index) => <Text key={item.name} color={index === selectedIndex ? 'green' : 'gray'}>{index === selectedIndex ? '› ' : '  '}{item.name} — {item.description}</Text>)}</Box>; }
-function PickerView({ picker }: { picker: PickerState }) { return <Box flexDirection="column" marginTop={1} borderStyle="single" paddingX={1}><Text color="cyan">{picker.title} (↑/↓ choose · Enter select · Esc cancel)</Text>{picker.options.map((option, index) => <Box key={`${option.value}-${index}`}><Text color={option.disabled ? 'gray' : index === picker.index ? 'green' : 'white'}>{index === picker.index ? '› ' : '  '}{option.label}</Text>{option.description ? <Text color="gray"> — {option.description}</Text> : null}</Box>)}</Box>; }
-function MessageLine({ message }: { message: TuiMessage }) { const palette = { user: 'green', assistant: 'white', thinking: 'gray', tool: 'cyan', system: 'blue', error: 'red', cancelled: 'yellow' } as const; const backgrounds = { user: 'green', assistant: 'black', thinking: 'gray', tool: 'cyan', system: 'blue', error: 'red', cancelled: 'yellow' } as const; const textColor = message.role === 'user' || message.role === 'tool' || message.role === 'system' || message.role === 'error' || message.role === 'cancelled' ? 'black' : palette[message.role]; return <Box marginY={0} paddingX={1} borderStyle="single" borderColor={palette[message.role]}><MarkdownView text={message.text} color={textColor} backgroundColor={backgrounds[message.role]} /></Box>; }
-function MarkdownView({ text, color, backgroundColor }: { text: string; color: 'black' | 'white' | 'gray'; backgroundColor: 'black' | 'green' | 'gray' | 'cyan' | 'blue' | 'red' | 'yellow' }) { let code = false; return <Box flexDirection="column">{sanitizeMarkdown(text).split('\n').map((line, index) => { if (line.startsWith('```')) { code = !code; return null; } const heading = /^(#{1,6})\s+(.*)$/.exec(line); const quote = /^>\s?(.*)$/.exec(line); const list = /^\s*[-*+]\s+(.*)$/.exec(line); const value = heading?.[2] ?? quote?.[1] ?? list?.[1] ?? line; return <Text key={index} color={color} backgroundColor={backgroundColor} bold={Boolean(heading)} dimColor={Boolean(quote) || code}>{list ? '• ' : quote ? '│ ' : ''}{inlineMarkdown(value)}</Text>; })}</Box>; }
+function CompletionView({ items, selectedIndex }: { items: readonly { name: string; description: string }[]; selectedIndex: number }) {
+  return <Box flexDirection="column"><Text color="cyan">commands · ↑/↓ choose · Tab/Enter accept · Esc cancel</Text>{items.map((item, index) => <Box key={item.name} width="100%" backgroundColor={index === selectedIndex ? 'gray' : undefined}><Text color={index === selectedIndex ? 'white' : 'gray'}>{index === selectedIndex ? '› ' : '  '}{item.name} — {item.description}</Text></Box>)}</Box>;
+}
+function PickerView({ picker }: { picker: PickerState }) {
+  return <Box flexDirection="column"><Text color="cyan">{picker.title} (↑/↓ choose · Enter select · Esc cancel)</Text>{picker.options.map((option, index) => <Box key={`${option.value}-${index}`} width="100%" backgroundColor={!option.disabled && index === picker.index ? 'gray' : undefined}><Text color={option.disabled ? 'gray' : index === picker.index ? 'white' : 'white'}>{index === picker.index ? '› ' : '  '}{option.label}</Text>{option.description ? <Text color="gray"> — {option.description}</Text> : null}</Box>)}</Box>;
+}
+type MessagePresentation = { color: 'green' | 'white' | 'gray' | 'cyan' | 'blue' | 'red' | 'yellow'; marker: string; dim?: boolean };
+export function messagePresentation(message: TuiMessage): MessagePresentation {
+  if (message.role === 'user') return { color: 'green', marker: '› ', dim: false };
+  if (message.role === 'thinking') return { color: 'gray', marker: '· ', dim: true };
+  if (message.role === 'tool') return { color: message.ok === false ? 'red' : 'cyan', marker: '• ' };
+  if (message.role === 'system') return { color: 'blue', marker: '· ', dim: true };
+  if (message.role === 'error') return { color: 'red', marker: '! ' };
+  if (message.role === 'cancelled') return { color: 'yellow', marker: '· ' };
+  return { color: 'white', marker: '' };
+}
+function MessageLine({ message }: { message: TuiMessage }) {
+  const presentation = messagePresentation(message);
+  return <Box marginBottom={1}><Text color={presentation.color} dimColor={presentation.dim}>{presentation.marker}</Text><MarkdownView text={message.text} color={presentation.color} dim={presentation.dim} /></Box>;
+}
+function MarkdownView({ text, color, dim = false }: { text: string; color: MessagePresentation['color']; dim?: boolean }) { let code = false; return <Box flexDirection="column">{sanitizeMarkdown(text).split('\n').map((line, index) => { if (line.startsWith('```')) { code = !code; return null; } const heading = /^(#{1,6})\s+(.*)$/.exec(line); const quote = /^>\s?(.*)$/.exec(line); const list = /^\s*[-*+]\s+(.*)$/.exec(line); const value = heading?.[2] ?? quote?.[1] ?? list?.[1] ?? line; return <Text key={index} color={color} bold={Boolean(heading)} dimColor={dim || Boolean(quote) || code}>{list ? '• ' : quote ? '│ ' : ''}{inlineMarkdown(value)}</Text>; })}</Box>; }
 function sanitizeMarkdown(text: string): string { return text.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '').replace(/<[^>]*>/g, ''); }
-function inlineMarkdown(text: string): React.ReactNode[] { const parts = text.split(/(\*\*[^*]+\*\*|`[^`]+`|\[[^\]]+\]\([^)]*\))/g); return parts.filter(Boolean).map((part, index) => { if (part.startsWith('**')) return <Text key={index} bold>{part.slice(2, -2)}</Text>; if (part.startsWith('`')) return <Text key={index} inverse>{part.slice(1, -1)}</Text>; const link = /^\[([^\]]+)\]\([^)]*\)$/.exec(part); return <Text key={index} underline={Boolean(link)}>{link?.[1] ?? part}</Text>; }); }
+function inlineMarkdown(text: string): React.ReactNode[] { const parts = text.split(/(\*\*[^*]+\*\*|`[^`]+`|\[[^\]]+\]\([^)]*\))/g); return parts.filter(Boolean).map((part, index) => { if (part.startsWith('**')) return <Text key={index} bold>{part.slice(2, -2)}</Text>; if (part.startsWith('`')) return <Text key={index} bold>{part.slice(1, -1)}</Text>; const link = /^\[([^\]]+)\]\([^)]*\)$/.exec(part); return <Text key={index} underline={Boolean(link)}>{link?.[1] ?? part}</Text>; }); }
 
 export function sessionEntriesToTuiMessages(entries: SessionEntry[], showReasoning = false): TuiMessage[] {
   const messages: TuiMessage[] = [];

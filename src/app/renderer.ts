@@ -17,12 +17,9 @@ export function renderStreamEvent(event: AgentStreamEvent, showThinking: boolean
 }
 
 export function renderRunResult(result: AgentRunResult, includeAssistant = true): string {
-  const lines: string[] = [];
-  for (const message of result.messages) {
-    if (includeAssistant && message.role === 'assistant' && message.content.trim()) lines.push(`assistant: ${message.content.trim()}`);
-    if (message.role === 'tool') lines.push(`tool_result ${message.toolCallId ?? '(unknown)'}: ${message.content.trim()}`);
-  }
-  lines.push('');
-  lines.push(`run ended: ${result.stopReason} (${result.turns} turns, ${result.toolCalls} tool calls)`);
-  return `${lines.join('\n')}\n`;
+  if (!includeAssistant) return '';
+  const assistantText = result.messages
+    .filter((message) => message.role === 'assistant' && message.content.trim())
+    .map((message) => `assistant: ${message.content.trim()}`);
+  return assistantText.length ? `${assistantText.join('\n')}\n` : '';
 }
