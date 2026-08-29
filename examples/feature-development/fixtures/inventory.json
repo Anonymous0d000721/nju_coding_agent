@@ -1,0 +1,10 @@
+{
+  "revision": 4,
+  "nextAuditId": 1,
+  "items": [
+    { "sku": "book-red", "available": 12, "reserved": 0 },
+    { "sku": "book-blue", "available": 3, "reserved": 1 },
+    { "sku": "pen-black", "available": 40, "reserved": 0 }
+  ],
+  "audit": []
+}

@@ -1,5 +1,5 @@
 {
-  "name": "buggy-order-task-service",
+  "name": "inventory-reservation-service",
   "private": true,
   "type": "module",
   "scripts": { "build": "tsc", "test": "vitest run", "typecheck": "tsc --noEmit", "demo": "npm run build && node scripts/demo.mjs", "reset": "node scripts/reset.mjs" },

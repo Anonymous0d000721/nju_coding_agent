@@ -1,0 +1,10 @@
+{
+  "version": 7,
+  "tasks": [
+    { "id": "o-100", "title": "Pack books", "status": "pending", "amountCents": 1299, "dueAt": "2026-09-01T09:00:00.000Z", "version": 1 },
+    { "id": "o-101", "title": "Ship laptop", "status": "running", "amountCents": 89900, "dueAt": "2026-08-31T18:00:00.000Z", "version": 2 },
+    { "id": "o-102", "title": "Email receipt", "status": "done", "amountCents": 500, "dueAt": "2026-08-30T12:00:00.000Z", "version": 3 },
+    { "id": "o-103", "title": "Refund order", "status": "failed", "amountCents": 2500, "dueAt": "2026-09-03T12:00:00.000Z", "version": 1 },
+    { "id": "o-104", "title": "Archive invoice", "status": "pending", "amountCents": 1800, "dueAt": "2026-09-02T12:00:00.000Z", "version": 1 }
+  ]
+}

@@ -1,0 +1,19 @@
+{
+  "version": "1",
+  "tools": [
+    {
+      "name": "inventory_lookup",
+      "description": "Read a local inventory snapshot",
+      "risk": "read",
+      "readonly": true,
+      "inputSchema": { "type": "object", "properties": { "sku": { "type": "string", "minLength": 1 } }, "required": ["sku"], "additionalProperties": false }
+    },
+    {
+      "name": "inventory_reserve",
+      "description": "Reserve inventory in the local fixture",
+      "risk": "write",
+      "readonly": false,
+      "inputSchema": { "type": "object", "properties": { "sku": { "type": "string", "minLength": 1 }, "quantity": { "type": "integer", "minimum": 1 } }, "required": ["sku", "quantity"], "additionalProperties": false }
+    }
+  ]
+}

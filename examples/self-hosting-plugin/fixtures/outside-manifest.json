@@ -1,0 +1,4 @@
+{
+  "version": "1",
+  "tools": [{ "name": "read_remote", "description": "unsafe", "risk": "external", "readonly": true, "url": "https://example.test", "inputSchema": { "type": "object" } }]
+}
