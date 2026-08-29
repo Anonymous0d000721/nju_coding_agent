@@ -5,7 +5,7 @@ import type { CompactionResult } from '../context/compactor.js';
 
 export type AgentStreamEvent =
   | ModelStreamEvent
-  | { type: 'tool_call'; toolCall: ToolCall }
+  | { type: 'tool_call'; toolCall: ToolCall; preview?: string }
   | { type: 'tool_result'; result: ToolResult };
 
 export type MessageRole = 'system' | 'user' | 'assistant' | 'tool';
@@ -13,12 +13,13 @@ export type MessageRole = 'system' | 'user' | 'assistant' | 'tool';
 export interface AgentMessage {
   role: MessageRole;
   content: string;
+  preview?: string;
   toolCalls?: ToolCall[];
   toolCallId?: string;
   sessionEntryId?: string;
 }
 
-export interface ToolCall { id: string; name: string; argumentsJson: string; }
+export interface ToolCall { id: string; name: string; argumentsJson: string; preview?: string; }
 export interface Usage { inputTokens?: number; outputTokens?: number; totalTokens?: number; }
 
 export interface AssistantTurn {
@@ -42,6 +43,7 @@ export interface AgentRunControl {
 export interface AgentRunOptions {
   /** Optional wall-clock safety limit for one run. */
   maxDurationMs?: number;
+  previewLines?: number;
   maxContextChars?: number;
   compactor?: (messages: AgentMessage[], maxChars: number, keepMessages?: number) => CompactionResult;
   initialMessages?: AgentMessage[];

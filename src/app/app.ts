@@ -133,7 +133,7 @@ export async function runPrompt(config: AgentConfig, prompt: string, sessionId?:
   for (const diagnostic of contextDiagnostics) await telemetry.append({ type: 'harness_error', sessionId: session?.id, runId, data: { ...diagnostic } });
   const runner = new AgentRunner({
     model: createModelClient({ apiFormat: config.model.apiFormat, apiKey: config.model.apiKey, baseUrl: config.model.baseUrl, model: config.model.model }),
-    tools: new ToolExecutor(registry, { workspaceRoot: config.workspaceRoot, permissionMode: config.permissionMode, approve: approveTool }),
+    tools: new ToolExecutor(registry, { workspaceRoot: config.workspaceRoot, permissionMode: config.permissionMode, previewLines: config.toolPreviewLines ?? 8, approve: approveTool }),
     systemPrompt: buildSystemPrompt(config.workspaceRoot, { pluginContext: renderContributions(contributions) }),
     toolDefinitions: registry.definitionsForModel(),
     hooks,
@@ -145,7 +145,7 @@ export async function runPrompt(config: AgentConfig, prompt: string, sessionId?:
   });
   try {
     let streamedText = false;
-    const result = await runner.run(effectivePrompt, { maxContextChars: 100_000, compactor: compactor.compact.bind(compactor), initialMessages: previousMessages, persistUserMessage: false, userMessageEntryId: userEntry?.id, thinking, goalGate: true,
+    const result = await runner.run(effectivePrompt, { previewLines: config.toolPreviewLines ?? 8, maxContextChars: 100_000, compactor: compactor.compact.bind(compactor), initialMessages: previousMessages, persistUserMessage: false, userMessageEntryId: userEntry?.id, thinking, goalGate: true,
       control,
       onStreamEvent: mode === 'text' && (streamOutput || onAgentEvent) ? async (event) => {
         await onAgentEvent?.(event);

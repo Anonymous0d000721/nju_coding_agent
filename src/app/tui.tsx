@@ -361,12 +361,12 @@ export function sessionEntriesToTuiMessages(entries: SessionEntry[], showReasoni
       if (message.role === 'user') messages.push({ role: 'user', text: message.content });
       else if (message.role === 'assistant') {
         if (message.content) messages.push({ role: 'assistant', text: message.content });
-        for (const call of message.toolCalls ?? []) { toolNames.set(call.id, call.name); messages.push({ role: 'tool', text: `${call.name} · completed`, ok: true, toolCallId: call.id }); }
+        for (const call of message.toolCalls ?? []) { toolNames.set(call.id, call.name); messages.push({ role: 'tool', text: call.preview ?? `${call.name} · completed`, ok: true, toolCallId: call.id }); }
       } else if (message.role === 'tool') {
         const name = toolNames.get(message.toolCallId ?? '') ?? 'tool';
         const failed = /failed|error|denied/i.test(message.content);
         const index = messages.findIndex((item) => item.role === 'tool' && item.toolCallId === message.toolCallId);
-        const card: TuiMessage = { role: 'tool', text: `${name} · ${failed ? 'failed' : 'completed'}`, ok: !failed, toolCallId: message.toolCallId };
+        const card: TuiMessage = { role: 'tool', text: message.preview ?? `${name} · ${failed ? 'failed' : 'completed'}`, ok: !failed, toolCallId: message.toolCallId };
         if (index >= 0) messages[index] = card; else messages.push(card);
       }
     } else if (entry.type === 'run_end' && entry.stopReason === 'user_cancelled') messages.push({ role: 'cancelled', text: 'Run interrupted.' });
@@ -378,8 +378,8 @@ export function sessionEntriesToTuiMessages(entries: SessionEntry[], showReasoni
 export function applyAgentEvent(messages: TuiMessage[], event: AgentStreamEvent, showReasoning: boolean): TuiMessage[] {
   if (event.type === 'text_delta') return appendToLast(messages, 'assistant', event.delta);
   if (event.type === 'thinking_delta') return showReasoning && event.delta ? appendToLast(messages, 'thinking', event.delta) : messages;
-  if (event.type === 'tool_call') return [...messages, { role: 'tool', text: `${event.toolCall.name} · running`, toolCallId: event.toolCall.id }];
-  if (event.type === 'tool_result') { const status = event.result.ok ? 'completed' : `failed:${event.result.error?.code ?? 'error'}`; let index = -1; for (let i = messages.length - 1; i >= 0; i -= 1) { const item = messages[i]; if (item?.role === 'tool' && item.toolCallId === event.result.toolCallId) { index = i; break; } } if (index >= 0) return [...messages.slice(0, index), { role: 'tool', text: `${event.result.toolName} · ${status}`, ok: event.result.ok, toolCallId: event.result.toolCallId }, ...messages.slice(index + 1)]; return [...messages, { role: 'tool', text: `${event.result.toolName} · ${status}`, ok: event.result.ok, toolCallId: event.result.toolCallId }]; }
+  if (event.type === 'tool_call') return [...messages, { role: 'tool', text: event.preview ?? event.toolCall.preview ?? `${event.toolCall.name} · running`, toolCallId: event.toolCall.id }];
+  if (event.type === 'tool_result') { const status = event.result.ok ? 'completed' : `failed:${event.result.error?.code ?? 'error'}`; const text = event.result.preview ?? `${event.result.toolName} · ${status}`; let index = -1; for (let i = messages.length - 1; i >= 0; i -= 1) { const item = messages[i]; if (item?.role === 'tool' && item.toolCallId === event.result.toolCallId) { index = i; break; } } if (index >= 0) return [...messages.slice(0, index), { role: 'tool', text, ok: event.result.ok, toolCallId: event.result.toolCallId }, ...messages.slice(index + 1)]; return [...messages, { role: 'tool', text, ok: event.result.ok, toolCallId: event.result.toolCallId }]; }
   return messages;
 }
 function appendToLast(messages: TuiMessage[], role: 'assistant' | 'thinking', delta: string): TuiMessage[] { const last = messages.at(-1); return last?.role === role ? [...messages.slice(0, -1), { role, text: `${last.text}${delta}` }] : [...messages, { role, text: delta }]; }

@@ -28,6 +28,7 @@ export interface ToolContext {
   workspaceRoot: string;
   signal?: AbortSignal;
   permissionMode?: PermissionMode;
+  previewLines?: number;
   approve?: (tool: ToolDefinition) => Promise<boolean>;
 }
 
@@ -39,6 +40,7 @@ export interface ToolResult {
   ok: boolean;
   content: string;
   details?: unknown;
+  preview?: string;
   error?: ToolError;
   truncated?: boolean;
   artifactPath?: string;
@@ -57,5 +59,6 @@ export function toolResultToMessage(result: ToolResult): AgentMessage {
     role: 'tool',
     toolCallId: result.toolCallId,
     content: result.content,
+    preview: result.preview,
   };
 }

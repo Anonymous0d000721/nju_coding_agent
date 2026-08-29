@@ -156,8 +156,8 @@ export async function runRpc(deps: RpcDeps): Promise<AppResult> {
 function emitAgentEvent(write: (type: string, data: unknown, runId?: string) => void, streamEvent: AgentStreamEvent, runId: string): void {
   if (streamEvent.type === 'text_delta') write('message_delta', { text: streamEvent.delta }, runId);
   else if (streamEvent.type === 'thinking_delta') write('thinking_delta', { text: streamEvent.delta }, runId);
-  else if (streamEvent.type === 'tool_call') write('tool_call_start', { tool: streamEvent.toolCall.name, argsPreview: streamEvent.toolCall.argumentsJson.slice(0, 500) }, runId);
-  else if (streamEvent.type === 'tool_result') write('tool_result', { tool: streamEvent.result.toolName, status: streamEvent.result.ok ? 'ok' : 'error', elapsedMs: streamEvent.result.elapsedMs, error: streamEvent.result.error }, runId);
+  else if (streamEvent.type === 'tool_call') write('tool_call_start', { tool: streamEvent.toolCall.name, preview: streamEvent.preview ?? streamEvent.toolCall.preview }, runId);
+  else if (streamEvent.type === 'tool_result') write('tool_result', { tool: streamEvent.result.toolName, status: streamEvent.result.ok ? 'ok' : 'error', preview: streamEvent.result.preview, elapsedMs: streamEvent.result.elapsedMs, error: streamEvent.result.error }, runId);
 }
 
 function stringParam(params: Record<string, unknown>, name: string): string {

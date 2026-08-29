@@ -2,6 +2,7 @@ import type { ToolCall } from '../agent/types.js';
 import type { ToolContext, ToolDefinition, ToolResult } from './types.js';
 import { validateJsonSchema } from './schema.js';
 import { ToolRegistry } from './registry.js';
+import { formatToolCallPreview, formatToolResultPreview } from './preview.js';
 
 const MAX_RESULT_CHARS = 12_000;
 
@@ -17,24 +18,24 @@ export class ToolExecutor {
   private async execute(call: ToolCall, signal?: AbortSignal): Promise<ToolResult> {
     const started = Date.now();
     const tool = this.registry.get(call.name);
-    if (!tool) return failure(call.id, call.name, 'unknown_tool', `Unknown tool: ${call.name}`, Date.now() - started);
-    if (!(await this.isAllowed(tool))) return failure(call.id, call.name, 'permission_denied', `Permission denied for ${tool.risk} tool in ${this.ctx.permissionMode ?? 'yolo'} mode`, Date.now() - started);
+    if (!tool) return failure(call.id, call.name, 'unknown_tool', `Unknown tool: ${call.name}`, Date.now() - started, undefined, call, this.ctx.previewLines);
+    if (!(await this.isAllowed(tool))) return failure(call.id, call.name, 'permission_denied', `Permission denied for ${tool.risk} tool in ${this.ctx.permissionMode ?? 'yolo'} mode`, Date.now() - started, undefined, call, this.ctx.previewLines);
 
     let args: unknown;
     try {
       args = call.argumentsJson ? JSON.parse(call.argumentsJson) : {};
     } catch (error) {
-      return failure(call.id, call.name, 'invalid_arguments', `Invalid JSON arguments: ${messageOf(error)}`, Date.now() - started);
+      return failure(call.id, call.name, 'invalid_arguments', `Invalid JSON arguments: ${messageOf(error)}`, Date.now() - started, undefined, call, this.ctx.previewLines);
     }
     const validation = validateJsonSchema(args, tool.parameters);
-    if (!validation.ok) return failure(call.id, call.name, 'invalid_arguments', validation.message ?? 'Invalid arguments', Date.now() - started);
+    if (!validation.ok) return failure(call.id, call.name, 'invalid_arguments', validation.message ?? 'Invalid arguments', Date.now() - started, undefined, call, this.ctx.previewLines);
 
     try {
       const value = await tool.handler(args, { ...this.ctx, signal: signal ?? this.ctx.signal });
       const observation = boundedObservation(value);
-      return { toolCallId: call.id, toolName: call.name, ok: true, content: observation.content, details: value, truncated: observation.truncated, elapsedMs: Date.now() - started };
+      return { toolCallId: call.id, toolName: call.name, ok: true, content: observation.content, details: value, preview: formatToolResultPreview(call, value, { ok: true }, this.ctx.previewLines), truncated: observation.truncated, elapsedMs: Date.now() - started };
     } catch (error) {
-      return failure(call.id, call.name, codeOf(error), messageOf(error), Date.now() - started, detailsOf(error));
+      return failure(call.id, call.name, codeOf(error), messageOf(error), Date.now() - started, detailsOf(error), call, this.ctx.previewLines);
     }
   }
 
@@ -45,11 +46,11 @@ export class ToolExecutor {
   }
 }
 
-function failure(toolCallId: string, toolName: string, code: string, message: string, elapsedMs: number, details?: unknown): ToolResult {
+function failure(toolCallId: string, toolName: string, code: string, message: string, elapsedMs: number, details?: unknown, call?: ToolCall, previewLines?: number): ToolResult {
   const detailRecord = isRecord(details) ? details : undefined;
   const hint = typeof detailRecord?.hint === 'string' ? detailRecord.hint : undefined;
   const content = `Tool ${toolName} failed (${code}): ${message}${hint ? `\nHint: ${hint}` : ''}`;
-  return { toolCallId, toolName, ok: false, content, details, error: { code, message, recoverable: true, details }, elapsedMs };
+  return { toolCallId, toolName, ok: false, content, details, preview: call ? formatToolCallPreview(call, previewLines) + `\nfailed: ${code}` : `failed: ${code}`, error: { code, message, recoverable: true, details }, elapsedMs };
 }
 
 function boundedObservation(value: unknown): { content: string; truncated: boolean } {

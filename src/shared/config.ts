@@ -9,6 +9,7 @@ export interface AgentConfig {
   workspaceRoot: string;
   permissionMode: 'yolo' | 'strict' | 'confirm';
   telemetry: 'off' | 'normal' | 'debug';
+  toolPreviewLines?: number;
   trustOverride?: boolean;
   projectTrusted: boolean;
   model: { apiKey?: string; baseUrl: string; model: string; apiFormat: ApiFormat; thinking: ThinkingConfig };
@@ -28,6 +29,7 @@ export function loadConfig(input: { env: NodeJS.ProcessEnv; args: CliArgs; cwd: 
     workspaceRoot,
     permissionMode: input.args.permissionMode,
     telemetry: input.args.telemetry,
+    toolPreviewLines: parsePositiveInteger(envValue('NJU_AGENT_TOOL_PREVIEW_LINES'), 8, 100),
     trustOverride: input.args.approve,
     projectTrusted,
     model: {
@@ -41,6 +43,13 @@ export function loadConfig(input: { env: NodeJS.ProcessEnv; args: CliArgs; cwd: 
     memory: { enabled: parseBoolean(envValue('NJU_AGENT_MEMORY_ENABLED'), true), rootDir: envValue('NJU_AGENT_MEMORY_DIR') },
     mcpServers: parseMcpServers(envValue('NJU_AGENT_MCP_SERVERS')),
   };
+}
+
+function parsePositiveInteger(value: string | undefined, fallback: number, max: number): number {
+  if (value === undefined) return fallback;
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < 1 || parsed > max) throw new Error(`Invalid NJU_AGENT_TOOL_PREVIEW_LINES: ${value}. Expected an integer from 1 to ${max}`);
+  return parsed;
 }
 
 function parseBoolean(value: string | undefined, fallback: boolean): boolean {

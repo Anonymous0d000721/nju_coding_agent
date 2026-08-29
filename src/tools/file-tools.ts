@@ -254,9 +254,18 @@ function ensureNonOverlapping(edits: NormalizedEdit[]): void {
 }
 
 function diffPreview(before: string[], after: string[]): string {
-  const beforeText = before.join('\n');
-  const afterText = after.join('\n');
-  return [`before ${before.length} lines hash=${fileHash(beforeText)}`, `after ${after.length} lines hash=${fileHash(afterText)}`].join('\n');
+  let prefix = 0;
+  while (prefix < before.length && prefix < after.length && before[prefix] === after[prefix]) prefix += 1;
+  let suffix = 0;
+  while (suffix < before.length - prefix && suffix < after.length - prefix && before[before.length - 1 - suffix] === after[after.length - 1 - suffix]) suffix += 1;
+  const beforeEnd = before.length - suffix;
+  const afterEnd = after.length - suffix;
+  const lines = [
+    `@@ -${prefix + 1},${Math.max(0, beforeEnd - prefix)} +${prefix + 1},${Math.max(0, afterEnd - prefix)} @@`,
+    ...before.slice(prefix, beforeEnd).map((line) => `- ${line}`),
+    ...after.slice(prefix, afterEnd).map((line) => `+ ${line}`),
+  ];
+  return lines.join('\n');
 }
 
 function objectSchema(properties: Record<string, unknown>, required: string[] = []) {

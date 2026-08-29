@@ -5,6 +5,7 @@ import { toolResultToMessage } from '../tools/types.js';
 import { compactMessages } from '../context/compactor.js';
 import { HookRegistry } from './hooks.js';
 import { evaluateGoalEvidence } from './goal-gate.js';
+import { formatToolCallPreview } from '../tools/preview.js';
 
 export interface AgentRunnerDeps {
   model: ModelClient;
@@ -58,7 +59,7 @@ export class AgentRunner {
       const assistant = this.deps.model.stream
         ? await this.deps.model.stream(request, async (event) => { await options.onStreamEvent?.(event); }, signal)
         : await this.deps.model.complete(request, signal);
-      const assistantMessage: AgentMessage = { role: 'assistant', content: assistant.text, toolCalls: assistant.toolCalls };
+      const assistantMessage: AgentMessage = { role: 'assistant', content: assistant.text, toolCalls: assistant.toolCalls.map((toolCall) => ({ ...toolCall, preview: formatToolCallPreview(toolCall, options.previewLines) })) };
       messages.push(assistantMessage);
       await this.deps.onMessage?.(assistantMessage);
       turn += 1;
@@ -79,7 +80,8 @@ export class AgentRunner {
       }
       for (const toolCall of assistant.toolCalls) {
         await this.deps.hooks?.run('beforeTool', { userPrompt, turn: currentTurn, toolCall, signal });
-        await options.onStreamEvent?.({ type: 'tool_call', toolCall });
+        const preview = formatToolCallPreview(toolCall, options.previewLines);
+        await options.onStreamEvent?.({ type: 'tool_call', toolCall: { ...toolCall, preview }, preview });
       }
       const results = await this.deps.tools.executeBatch(assistant.toolCalls, signal);
       toolResults.push(...results);
