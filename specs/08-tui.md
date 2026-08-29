@@ -58,7 +58,7 @@
 | interactive TUI | 无 prompt，且非 `--mode json/rpc` | 启动 Ink TUI |
 | text prompt | 有 prompt 或 `--print`，默认 text | 沿用现有 stdout 流式输出 |
 | JSON | `--json` 或 `--mode json` | 只输出最终 JSON 对象/错误对象 |
-| RPC | `--mode rpc` | 当前仍返回未实现 |
+| RPC | `--mode rpc` | 启动 stdin/stdout JSONL 长驻协议，不进入 TUI |
 
 ### 4.2 不变量
 

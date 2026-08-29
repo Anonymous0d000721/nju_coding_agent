@@ -30,6 +30,7 @@ import { McpManager } from '../mcp/client.js';
 import { createStdioTransport } from '../mcp/stdio.js';
 import { registerMcpTools } from '../mcp/registry-adapter.js';
 import { loadUserPlugins, pluginTools } from '../plugins/loader.js';
+import { runRpc } from './rpc.js';
 import type { AgentMessage, AgentRunControl, AgentRunResult, AgentStreamEvent } from '../agent/types.js';
 import type { ToolDefinition } from '../tools/types.js';
 import type { ThinkingLevel } from '../model/model-client.js';
@@ -54,7 +55,7 @@ export function createApp(services: AppServices) {
       if (args.help) return { exitCode: 0, stdout: renderHelp() };
       if (args.version) return { exitCode: 0, stdout: renderVersion() };
       const config = loadConfig({ env: services.env, args, cwd: services.cwd });
-      if (args.mode === 'rpc') return { exitCode: 1, stderr: 'RPC mode is planned but not implemented yet.\n' };
+      if (args.mode === 'rpc') return runRpc({ config, stdin: services.stdin ?? process.stdin, stdout: services.stdout ?? process.stdout, runPrompt, compactSession });
       if (!config.model.apiKey) return missingAuth(args.mode);
       if (!args.prompt) {
         if (!isInteractiveTty(services)) return { exitCode: 1, stderr: 'Interactive TUI requires a TTY. Pass a prompt or use --print/--mode json for non-interactive runs.\n' };
@@ -223,8 +224,9 @@ function isInteractiveTty(services: AppServices): boolean {
   return stdin?.isTTY === true && stdout?.isTTY === true;
 }
 
-export function missingAuth(mode: 'text' | 'json'): AppResult {
+export function missingAuth(mode: 'text' | 'json' | 'rpc'): AppResult {
   const message = 'Missing API key. Set NJU_AGENT_API_KEY, NJU_AGENT_BASE_URL, and NJU_AGENT_MODEL. See .env.example.';
   if (mode === 'json') return { exitCode: 3, stdout: `${JSON.stringify({ type: 'run_error', level: 'error', data: { code: 'missing_auth', message } })}\n` };
+  if (mode === 'rpc') return { exitCode: 3, stdout: `${JSON.stringify({ jsonrpc: '2.0', method: 'event', params: { type: 'error', data: { code: 'missing_auth', message } } })}\n` };
   return { exitCode: 3, stderr: `${message}\n` };
 }
