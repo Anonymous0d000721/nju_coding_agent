@@ -179,13 +179,16 @@ Status Bar（固定单行；无外框、无上下 padding）
 
 ### 6.4 运行中输入与取消
 
-v1 不实现 steering 或 follow-up queue，且每次只允许一个 active run：
+允许一个 active run，同时支持显式 queue 与 steering：
 
-- `running` 时 editor 可保留或允许编辑草稿，但 `Enter` 不得提交、排队或丢弃第二条 prompt；状态栏必须说明 run 正在进行；
+- `running` 时 editor 保留可编辑草稿；普通 `Enter` 将当前草稿加入显式 queue，不提交第二个独立 active run；
+- `Ctrl+Enter` 将当前草稿作为 steering message，放入 Runner 的 steering 队列，并在下一次模型请求前注入；
+- queue message 在当前模型回答结束后作为下一轮 user message 注入；必须保留顺序，不得静默丢弃；
+- queue/steering 必须可视化显示 pending notice，且 run 结束、取消或出错时清理未投递项，不能泄漏到下一次独立 run；
 - 没有 overlay/completion 时，`Esc` 对 active run 发出取消请求（经 `AbortController` / Runner cancellation）；取消优先级低于关闭 completion/picker；
-- 取消请求发出后 editor 禁止再次提交，直到当前 run 已清理完毕并回到 `idle`；原有草稿必须保留；
-- 被取消的 run 必须出现独立于 error 的 `cancelled`/`interrupted` notice，并让状态栏返回 idle；不得将 user cancellation 渲染为模型或工具错误；
-- 后续引入 steering/follow-up queue 时，必须扩展为显式的 session/Runner 接口、可视 pending 队列以及取消/恢复规则，不能复用 v1 的禁用提交行为进行隐式排队。
+- `Ctrl+C` 在 active run 中等价于取消，不得直接退出进程；空闲状态下才执行清空草稿或退出行为；
+- 取消请求发出后禁止新增 queue/steering，直到当前 run 清理完毕并回到 `idle`；原有草稿和已显示 notice 必须保留；
+- 被取消的 run 必须出现独立于 error 的 `cancelled`/`interrupted` notice，并让状态栏返回 idle；不得将 user cancellation 渲染为模型或工具错误。
 
 ## 7. UI 状态模型
 

@@ -104,9 +104,13 @@ export class JsonlSessionStore {
 
 export function sessionName(entries: SessionEntry[]): string | undefined {
   const renamed = [...entries].reverse().find((entry) => entry.type === 'session_name');
-  if (renamed?.type === 'session_name') return renamed.name;
+  if (renamed?.type === 'session_name' && renamed.name.trim()) return renamed.name.trim();
   const start = entries.find((entry) => entry.type === 'session_start');
-  return start?.type === 'session_start' ? start.name : undefined;
+  if (start?.type === 'session_start' && start.name?.trim()) return start.name.trim();
+  const firstPrompt = entries.find((entry) => entry.type === 'message' && entry.message.role === 'user');
+  if (firstPrompt?.type !== 'message' || firstPrompt.message.role !== 'user') return undefined;
+  const oneLine = firstPrompt.message.content.replace(/\s+/g, ' ').trim();
+  return oneLine ? oneLine.slice(0, 120) : undefined;
 }
 
 export function parseSessionJsonl(content: string, source = '<memory>'): SessionEntry[] {

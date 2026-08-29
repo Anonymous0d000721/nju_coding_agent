@@ -20,18 +20,18 @@ npm run dev -- --print "检查当前项目并运行测试"
 npm run dev
 ```
 
-TUI 支持多行编辑、可见光标、Markdown、流式文本、紧凑工具状态、prompt history 和 slash picker。`/resume` 会恢复最近对话并可按页加载更早历史；`/trust` 将当前 workspace 写入用户级信任文件；`/name <name>` 为当前 session 写入持久名称；`/fork` 创建保留当前可发送上下文的新 child session；`/model`、`/effort`、`/reasoning` 提供选择器。`/memory` 查看本地记忆状态，`/compact` 将当前 session 历史压缩为可审计的本地 summary。
+TUI 支持多行编辑、可见光标、Markdown（包括表格）、流式文本、紧凑工具状态、prompt history 和 slash picker。`/resume` 会恢复最近对话并按 session name 或首句 prompt 显示；`/rename <session_name>` 可重命名当前 session；`/trust` 将当前 workspace 写入用户级信任文件；`/fork` 创建保留当前可发送上下文的新 child session；`/model`、`/effort`、`/reasoning` 提供选择器。`/memory` 查看本地记忆状态，`/compact` 将当前 session 历史压缩为可审计的本地 summary，`/reload` 重载用户插件并在下一次 run 生效。运行中按 Esc/Ctrl+C 取消，Enter 将草稿排队，Ctrl+Enter 发送 steering message。
 
 ## 演示 fixture
 
-`examples/buggy-todo-cli/` 提供一个无网络依赖的故意失败任务。可先运行其测试观察失败，再让 agent 读取实现、修复代码并重新运行测试；fixture 自带 Vitest 配置，不参与主项目测试扫描。
+`examples/` 提供面向 bug 修复、功能开发和自举 `nju-mcp-adaptor` 的 agent 练习题；`examples/buggy-todo-cli/` 是其中一个无网络依赖的故意失败任务。fixture 自带 Vitest 配置，不参与主项目测试扫描。用户插件可放在受信任 workspace 的 `.nju-agent/plugins/*.mjs`，格式和安全约束见 `.nju-agent/skills/plugin-development/SKILL.md`。
 
 
 - AgentRunner：多轮工具调用、预算、取消、结构化错误和流式事件。
 - 文件/搜索/PowerShell 工具：工作区路径保护、超时、截断、权限模式。
 - JSONL session：消息即时追加、损坏尾行恢复、历史分页。
 - Instructions、catalog-first Skills、`load_skill`、生命周期 hooks 和有界上下文压缩。
-- Context Harness：原生项目 instructions/Skills，加上可插拔的本地 `MemoryPlugin` 与零模型 deterministic compaction；P3 observational memory 仅保留设计，不在当前版本启用。
+- Context Harness：原生项目 instructions/Skills，加上可插拔的本地 `MemoryPlugin`、零模型 deterministic compaction 和受信任 workspace 用户插件；P3 observational memory 仅保留设计，不在当前版本启用。
 - todo 持久化、脱敏本地 telemetry、MCP stdio JSON-RPC 工具发现与注册；MCP 仅在 `NJU_AGENT_MCP_SERVERS` 显式配置时启动。
 - OpenAI Chat/Responses、Anthropic Messages 原生适配。
 

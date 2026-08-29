@@ -1,17 +1,19 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { stdin as defaultStdin, stdout as defaultStdout } from 'node:process';
 import { Box, Text, render, useApp, useInput } from 'ink';
-import type { AgentStreamEvent } from '../agent/types.js';
+import type { AgentRunControl, AgentStreamEvent } from '../agent/types.js';
 import type { ThinkingLevel } from '../model/model-client.js';
 import { clampThinkingLevel } from '../model/thinking.js';
 import { createSessionNameEntry, createThinkingLevelChangeEntry } from '../session/entries.js';
 import { JsonlSessionStore } from '../session/jsonl-store.js';
 import type { AgentConfig } from '../shared/config.js';
+import type { ToolDefinition } from '../tools/types.js';
 import { ProjectTrustStore } from '../shared/trust.js';
 import { renderHelp } from './renderer.js';
 import { backspace, createEditorState, deleteForward, graphemeBoundaries, insertPaste, insertText, moveDown, moveLeft, moveRight, moveUp, parseBracketedPaste, slashCompletions, submitEditor, type EditorState } from './editor-state.js';
 import type { SessionEntry } from '../session/session-types.js';
 import type { AppResult, AppServices, compactSession, memoryStatus, runPrompt } from './app.js';
+import { loadUserPlugins } from '../plugins/loader.js';
 
 export type RunPrompt = typeof runPrompt;
 export interface TuiOptions { config: AgentConfig; services: AppServices; runPrompt: RunPrompt; compactSession: typeof compactSession; memoryStatus: typeof memoryStatus; }
@@ -26,9 +28,9 @@ export type TuiMessage =
 export const TUI_COMMANDS = [
   { name: '/help', description: 'show help' }, { name: '/session', description: 'show current session' },
   { name: '/new', description: 'start a new session' }, { name: '/fork', description: 'fork current session' }, { name: '/trust', description: 'trust this workspace' }, { name: '/name', description: 'name current session' }, { name: '/sessions', description: 'list sessions' },
-  { name: '/resume', description: 'select a session' }, { name: '/model', description: 'select a model' },
+  { name: '/resume', description: 'select a session' }, { name: '/rename', description: 'rename current session' }, { name: '/model', description: 'select a model' },
   { name: '/effort', description: 'select reasoning effort' }, { name: '/reasoning', description: 'toggle reasoning display' },
-  { name: '/thinking', description: 'alias for /reasoning' }, { name: '/memory', description: 'show local memory status' }, { name: '/compact', description: 'compact current session' },
+  { name: '/thinking', description: 'alias for /reasoning' }, { name: '/memory', description: 'show local memory status' }, { name: '/reload', description: 'reload user and MCP tools' }, { name: '/compact', description: 'compact current session' },
   { name: '/quit', description: 'exit TUI' }, { name: '/exit', description: 'exit TUI' },
 ] as const;
 
@@ -44,7 +46,11 @@ function TuiApp({ config, runPrompt, compactSession, memoryStatus }: TuiOptions)
   const [messages, setMessages] = useState<TuiMessage[]>(() => config.session.id ? [{ role: 'system', text: 'Loading session history…' }] : [{ role: 'system', text: `nju-agent ${config.model.model} · type /help for commands` }]);
   const [status, setStatus] = useState<TuiStatus>(config.session.id ? 'hydrating' : 'idle');
   const [sessionId, setSessionId] = useState<string | undefined>(undefined);
-  const [showReasoning, setShowReasoning] = useState(false);
+  const [sessionLabel, setSessionLabel] = useState<string | undefined>(undefined);
+  const [approval, setApproval] = useState<ToolDefinition>();
+  const [showReasoning, setShowReasoning] = useState(true);
+  const reloadPlugins = useRef(false);
+  const markPluginsForReload = () => { reloadPlugins.current = true; };
   const [picker, setPicker] = useState<PickerState>();
   const [pasteBuffer, setPasteBuffer] = useState('');
   const [completionIndex, setCompletionIndex] = useState(0);
@@ -53,6 +59,15 @@ function TuiApp({ config, runPrompt, compactSession, memoryStatus }: TuiOptions)
   const [historyCursor, setHistoryCursor] = useState<string>();
   const controller = useRef<AbortController | undefined>(undefined);
   const hydrationController = useRef<AbortController | undefined>(undefined);
+  const approvalResolver = useRef<((allowed: boolean) => void) | undefined>(undefined);
+  const queuedMessages = useRef<string[]>([]);
+  const steeredMessages = useRef<string[]>([]);
+  const runControl = useRef<AgentRunControl>({
+    queue: (message) => { queuedMessages.current.push(message); },
+    steer: (message) => { steeredMessages.current.push(message); },
+    drainQueue: () => queuedMessages.current.splice(0),
+    drainSteers: () => steeredMessages.current.splice(0),
+  });
   const initialSessionId = useRef(config.session.id);
   const initialHydrationStarted = useRef(false);
   const append = (message: TuiMessage) => setMessages((items) => [...items, message]);
@@ -75,11 +90,12 @@ function TuiApp({ config, runPrompt, compactSession, memoryStatus }: TuiOptions)
   };
   const openPicker = async (kind: PickerKind) => { try { setPicker(await createPicker(kind, config, sessionId, showReasoning)); } catch (error) { appendError(asMessage(error)); } };
   const resumeSession = async (next?: string) => {
-    const previous = { sessionId, messages, status, historyHasMore, historyCursor };
+    const previous = { sessionId, sessionLabel, messages, status, historyHasMore, historyCursor };
     hydrationController.current?.abort();
     if (!next) {
       config.session.id = undefined;
       setSessionId(undefined);
+      setSessionLabel(undefined);
       setMessages([{ role: 'system', text: 'Started a new session.' }]);
       setHistoryHasMore(false);
       setHistoryCursor(undefined);
@@ -96,6 +112,7 @@ function TuiApp({ config, runPrompt, compactSession, memoryStatus }: TuiOptions)
       const page = await new JsonlSessionStore(`${config.workspaceRoot}/.nju-agent`).readDisplayPage(next, { limit: 80 });
       if (signal.signal.aborted) {
         setSessionId(previous.sessionId);
+        setSessionLabel(previous.sessionLabel);
         setMessages(previous.messages);
         setHistoryHasMore(previous.historyHasMore);
         setHistoryCursor(previous.historyCursor);
@@ -105,6 +122,7 @@ function TuiApp({ config, runPrompt, compactSession, memoryStatus }: TuiOptions)
       const restored = sessionEntriesToTuiMessages(page.entries, showReasoning);
       config.session.id = next;
       setSessionId(next);
+      setSessionLabel(page.name);
       setMessages(restored.length ? restored : [{ role: 'system', text: 'This session has no displayable history.' }]);
       setHistoryHasMore(page.hasMore);
       setHistoryCursor(page.nextBeforeEntryId);
@@ -112,12 +130,14 @@ function TuiApp({ config, runPrompt, compactSession, memoryStatus }: TuiOptions)
     } catch (error) {
       if (signal.signal.aborted) {
         setSessionId(previous.sessionId);
+        setSessionLabel(previous.sessionLabel);
         setMessages(previous.messages);
         setHistoryHasMore(previous.historyHasMore);
         setHistoryCursor(previous.historyCursor);
         setStatus(previous.status);
       } else {
         setSessionId(previous.sessionId);
+        setSessionLabel(previous.sessionLabel);
         setMessages([...previous.messages, { role: 'error', text: `Could not load session history: ${asMessage(error)}` }]);
         setHistoryHasMore(previous.historyHasMore);
         setHistoryCursor(previous.historyCursor);
@@ -153,6 +173,20 @@ function TuiApp({ config, runPrompt, compactSession, memoryStatus }: TuiOptions)
     }
   };
   const cancelRun = () => { if (status !== 'running') return; setStatus('cancelling'); controller.current?.abort(); };
+  const submitWhileRunning = (kind: 'queue' | 'steer') => {
+    const submitted = submitEditor(editor);
+    if (!submitted.prompt) return;
+    setEditor(submitted.state);
+    if (kind === 'queue') {
+      runControl.current.queue(submitted.prompt);
+      appendSystem(`Queued message: ${submitted.prompt}`);
+    } else {
+      runControl.current.steer(submitted.prompt);
+      appendSystem(`Steering message: ${submitted.prompt}`);
+    }
+  };
+  const requestApproval = (tool: ToolDefinition) => new Promise<boolean>((resolve) => { approvalResolver.current = resolve; setApproval(tool); });
+  const resolveApproval = (allowed: boolean) => { approvalResolver.current?.(allowed); approvalResolver.current = undefined; setApproval(undefined); };
   useEffect(() => {
     if (!initialSessionId.current || initialHydrationStarted.current) return;
     initialHydrationStarted.current = true;
@@ -163,11 +197,16 @@ function TuiApp({ config, runPrompt, compactSession, memoryStatus }: TuiOptions)
     if (status === 'hydrating' || status === 'running' || status === 'cancelling') return;
     const submitted = submitEditor(editor); if (!submitted.prompt) return;
     setEditor(submitted.state); const raw = submitted.prompt; const line = raw.trim();
-    if (line.startsWith('/')) { await handleCommand(line, { app, config, sessionId, setSessionId, showReasoning, setShowReasoning, openPicker, appendSystem, appendError, persistEffort, setModel, resumeSession, compactSession, memoryStatus }); return; }
+    if (line.startsWith('/')) { await handleCommand(line, { app, config, sessionId, setSessionId, setSessionLabel, showReasoning, setShowReasoning, openPicker, appendSystem, appendError, persistEffort, setModel, resumeSession, compactSession, memoryStatus, markPluginsForReload }); return; }
     append({ role: 'user', text: raw }); setStatus('running'); const signal = new AbortController(); controller.current = signal;
     try {
-      const result = await runPrompt(config, raw, sessionId, 'text', config.model.thinking, undefined, showReasoning, (event) => setMessages((items) => applyAgentEvent(items, event, showReasoning)), signal.signal);
-      if (result.sessionId) setSessionId(result.sessionId);
+      const result = await runPrompt(config, raw, sessionId, 'text', config.model.thinking, undefined, showReasoning, (event) => setMessages((items) => applyAgentEvent(items, event, showReasoning)), signal.signal, requestApproval, reloadPlugins.current, runControl.current);
+      reloadPlugins.current = false;
+      if (result.sessionId) {
+        setSessionId(result.sessionId);
+        const current = (await new JsonlSessionStore(`${config.workspaceRoot}/.nju-agent`).list()).find((item) => item.id === result.sessionId);
+        setSessionLabel(current?.name);
+      }
       if (signal.signal.aborted) {
         append({ role: 'cancelled', text: 'Run interrupted.' });
         setStatus('idle');
@@ -184,18 +223,35 @@ function TuiApp({ config, runPrompt, compactSession, memoryStatus }: TuiOptions)
     if (pasteBuffer) { if (paste.paste === undefined) { setPasteBuffer(`${pasteBuffer}${value}`); return; } setPasteBuffer(''); updateEditor((state) => insertPaste(state, paste.paste!).state); value = paste.rest; }
     else if (value.startsWith('\u001B[200~') && paste.paste === undefined) { setPasteBuffer(value); return; }
     else if (paste.paste !== undefined) { updateEditor((state) => insertPaste(state, paste.paste!).state); value = paste.rest; }
+    if (approval) {
+      if (key.return || value.toLowerCase() === 'y') { resolveApproval(true); return; }
+      if (key.escape || value.toLowerCase() === 'n') { resolveApproval(false); return; }
+      return;
+    }
     if (picker) {
       if (key.escape) { setPicker(undefined); return; } if (key.upArrow) { setPicker({ ...picker, index: previousEnabledIndex(picker) }); return; } if (key.downArrow) { setPicker({ ...picker, index: nextEnabledIndex(picker) }); return; }
       if (key.return) { const option = picker.options[picker.index]; if (option) void applyPicker(picker, option); return; } return;
     }
     if (status === 'hydrating') { if (key.escape) hydrationController.current?.abort(); return; }
     if (key.escape) { if (completion.length) { setCompletionDismissed(true); return; } cancelRun(); return; }
-    if (key.ctrl && value === 'c') { if (editor.text) updateEditor((state) => ({ ...state, text: '', cursorOffset: 0 })); else app.exit(); return; }
+    if (key.ctrl && value === 'c') { if (status === 'running' || status === 'cancelling') { cancelRun(); return; } if (editor.text) updateEditor((state) => ({ ...state, text: '', cursorOffset: 0 })); else app.exit(); return; }
     if (key.pageUp && historyHasMore) { void loadEarlierHistory(); return; }
-    if (status === 'running' || status === 'cancelling') return;
+    if (status === 'running') { if (key.ctrl && key.return) submitWhileRunning('steer'); else if (key.return) submitWhileRunning('queue'); return; }
+    if (status === 'cancelling') return;
     if ((key.shift && key.return) || (key.ctrl && value === 'j')) { updateEditor((state) => insertText(state, '\n')); return; }
     if (completion.length && (key.upArrow || key.downArrow)) { setCompletionIndex((index) => Math.max(0, Math.min(completion.length - 1, index + (key.upArrow ? -1 : 1)))); return; }
-    if (completion.length && (key.tab || key.return)) { const selected = completion[completionIndex] ?? completion[0]; if (selected) updateEditor((state) => ({ ...state, text: selected.name, cursorOffset: selected.name.length })); return; }
+    if (completion.length && (key.tab || key.return)) {
+      const selected = completion[completionIndex] ?? completion[0];
+      if (selected) {
+        if (key.return) {
+          updateEditor((state) => createEditorState(state.history));
+          void handleCommand(selected.name, { app, config, sessionId, setSessionId, setSessionLabel, showReasoning, setShowReasoning, openPicker, appendSystem, appendError, persistEffort, setModel, resumeSession, compactSession, memoryStatus, markPluginsForReload });
+        } else {
+          updateEditor((state) => ({ ...state, text: selected.name, cursorOffset: selected.name.length }));
+        }
+      }
+      return;
+    }
     if (key.leftArrow) { updateEditor(moveLeft); return; } if (key.rightArrow) { updateEditor(moveRight); return; }
     if (key.upArrow) { updateEditor(moveUp); return; } if (key.downArrow) { updateEditor(moveDown); return; }
     if (key.backspace) { updateEditor(backspace); return; } if (key.delete) { updateEditor(deleteForward); return; }
@@ -205,7 +261,7 @@ function TuiApp({ config, runPrompt, compactSession, memoryStatus }: TuiOptions)
 
   const busy = status === 'hydrating' || status === 'running' || status === 'cancelling';
   const statusColor = status === 'error' ? 'red' : busy ? 'yellow' : 'gray';
-  const statusText = `api ${config.model.apiFormat} · model ${config.model.model} · effort ${config.model.thinking.level} · session ${sessionId ?? '(new)'} · permission ${config.permissionMode} · reasoning ${showReasoning ? 'on' : 'off'} · ${status} · Ctrl+J newline · Esc cancel`;
+  const statusText = `api ${config.model.apiFormat} · model ${config.model.model} · effort ${config.model.thinking.level} · session ${sessionLabel ?? '(new)'}${sessionId ? ` · id ${sessionId.slice(0, 8)}` : ''} · permission ${config.permissionMode} · reasoning ${showReasoning ? 'on' : 'off'} · ${status} · Ctrl+J newline · Esc cancel`;
 
   return <Box flexDirection="column">
     <Text color="gray" dimColor>nju-agent · {config.workspaceRoot}</Text>
@@ -214,17 +270,34 @@ function TuiApp({ config, runPrompt, compactSession, memoryStatus }: TuiOptions)
       {messages.map((message, index) => <MessageLine key={`${message.role}-${index}`} message={message} />)}
     </Box>
     <EditorView editor={editor} busy={busy} />
-    {picker ? <PickerView picker={picker} /> : completion.length ? <CompletionView items={completion} selectedIndex={completionIndex} /> : null}
+    {approval ? <ApprovalView tool={approval} /> : picker ? <PickerView picker={picker} /> : completion.length ? <CompletionView items={completion} selectedIndex={completionIndex} /> : null}
     <Text color={statusColor} wrap="truncate">{statusText}</Text>
   </Box>;
 }
 
 function EditorView({ editor, busy }: { editor: EditorState; busy: boolean }) {
-  const before = editor.text.slice(0, editor.cursorOffset); const boundary = graphemeBoundaries(editor.text).find((offset) => offset > editor.cursorOffset) ?? editor.text.length; const at = editor.text.slice(editor.cursorOffset, boundary); const after = editor.text.slice(boundary);
-  return <Box borderStyle="round"><Text color={busy ? 'yellow' : 'green'}>{busy ? '… ' : '> '}</Text><Text>{before}</Text><Text underline bold>{at || ' '}</Text><Text>{after}</Text></Box>;
+  const lines = editorLinesWithCursor(editor);
+  return <Box borderStyle="round" flexDirection="column">{lines.map((line, index) => <Text key={index}><Text color={index === 0 ? (busy ? 'yellow' : 'green') : 'gray'}>{index === 0 ? (busy ? '… ' : '> ') : '  '}</Text>{line.before}<Text underline bold color={busy ? 'yellow' : 'white'}>{line.at || '▌'}</Text>{line.after}</Text>)}</Box>;
+}
+
+export function editorLinesWithCursor(editor: EditorState): Array<{ before: string; at: string; after: string }> {
+  const lines = editor.text.split('\\n');
+  let offset = 0;
+  return lines.map((line) => {
+    const start = offset;
+    const end = start + line.length;
+    offset = end + 1;
+    if (editor.cursorOffset < start || editor.cursorOffset > end) return { before: line, at: '', after: '' };
+    const local = editor.cursorOffset - start;
+    const boundary = graphemeBoundaries(line).find((value) => value > local) ?? line.length;
+    return { before: line.slice(0, local), at: line.slice(local, boundary), after: line.slice(boundary) };
+  });
 }
 function CompletionView({ items, selectedIndex }: { items: readonly { name: string; description: string }[]; selectedIndex: number }) {
   return <Box flexDirection="column"><Text color="cyan">commands · ↑/↓ choose · Tab/Enter accept · Esc cancel</Text>{items.map((item, index) => <Box key={item.name} width="100%" backgroundColor={index === selectedIndex ? 'gray' : undefined}><Text color={index === selectedIndex ? 'white' : 'gray'}>{index === selectedIndex ? '› ' : '  '}{item.name} — {item.description}</Text></Box>)}</Box>;
+}
+function ApprovalView({ tool }: { tool: ToolDefinition }) {
+  return <Box flexDirection="column"><Text color="yellow">Permission required: {tool.name} ({tool.risk})</Text><Text color="gray">Press Enter/y to allow, n/Esc to deny</Text></Box>;
 }
 function PickerView({ picker }: { picker: PickerState }) {
   return <Box flexDirection="column"><Text color="cyan">{picker.title} (↑/↓ choose · Enter select · Esc cancel)</Text>{picker.options.map((option, index) => <Box key={`${option.value}-${index}`} width="100%" backgroundColor={!option.disabled && index === picker.index ? 'gray' : undefined}><Text color={option.disabled ? 'gray' : index === picker.index ? 'white' : 'white'}>{index === picker.index ? '› ' : '  '}{option.label}</Text>{option.description ? <Text color="gray"> — {option.description}</Text> : null}</Box>)}</Box>;
@@ -243,7 +316,39 @@ function MessageLine({ message }: { message: TuiMessage }) {
   const presentation = messagePresentation(message);
   return <Box marginBottom={1}><Text color={presentation.color} dimColor={presentation.dim}>{presentation.marker}</Text><MarkdownView text={message.text} color={presentation.color} dim={presentation.dim} /></Box>;
 }
-function MarkdownView({ text, color, dim = false }: { text: string; color: MessagePresentation['color']; dim?: boolean }) { let code = false; return <Box flexDirection="column">{sanitizeMarkdown(text).split('\n').map((line, index) => { if (line.startsWith('```')) { code = !code; return null; } const heading = /^(#{1,6})\s+(.*)$/.exec(line); const quote = /^>\s?(.*)$/.exec(line); const list = /^\s*[-*+]\s+(.*)$/.exec(line); const value = heading?.[2] ?? quote?.[1] ?? list?.[1] ?? line; return <Text key={index} color={color} bold={Boolean(heading)} dimColor={dim || Boolean(quote) || code}>{list ? '• ' : quote ? '│ ' : ''}{inlineMarkdown(value)}</Text>; })}</Box>; }
+function MarkdownView({ text, color, dim = false }: { text: string; color: MessagePresentation['color']; dim?: boolean }) {
+  let code = false;
+  const lines = sanitizeMarkdown(text).split('\n');
+  const children: React.ReactNode[] = [];
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index]!;
+    if (line.startsWith('```')) { code = !code; continue; }
+    const next = lines[index + 1];
+    if (isMarkdownTableRow(line) && next !== undefined && isMarkdownTableSeparator(next)) {
+      const header = parseMarkdownTableRow(line);
+      const separator = parseMarkdownTableRow(next);
+      const rows: string[][] = [header];
+      index += 1;
+      while (index + 1 < lines.length && isMarkdownTableRow(lines[index + 1]!)) {
+        index += 1;
+        rows.push(parseMarkdownTableRow(lines[index]!));
+      }
+      children.push(<TableView key={index} rows={rows} separator={separator} color={color} dim={dim || code} />);
+      continue;
+    }
+    const heading = /^(#{1,6})\s+(.*)$/.exec(line); const quote = /^>\s?(.*)$/.exec(line); const list = /^\s*[-*+]\s+(.*)$/.exec(line);
+    const value = heading?.[2] ?? quote?.[1] ?? list?.[1] ?? line;
+    children.push(<Text key={index} color={color} bold={Boolean(heading)} dimColor={dim || Boolean(quote) || code}>{list ? '• ' : quote ? '│ ' : ''}{inlineMarkdown(value)}</Text>);
+  }
+  return <Box flexDirection="column">{children}</Box>;
+}
+
+export function isMarkdownTableRow(line: string): boolean { return /^\s*\|.*\|\s*$/.test(line); }
+export function isMarkdownTableSeparator(line: string): boolean { return isMarkdownTableRow(line) && parseMarkdownTableRow(line).every((cell) => /^:?-{3,}:?$/.test(cell.trim())); }
+export function parseMarkdownTableRow(line: string): string[] { return line.trim().replace(/^\|/, '').replace(/\|$/, '').split('|').map((cell) => cell.trim()); }
+function TableView({ rows, separator, color, dim }: { rows: string[][]; separator: string[]; color: MessagePresentation['color']; dim: boolean }) {
+  return <Box flexDirection="column" marginBottom={1}>{rows.map((row, rowIndex) => <Box key={rowIndex}><Text color={color} dimColor={dim}>{row.map((cell, cellIndex) => `${cellIndex ? ' │ ' : '│ '}${cell}${cellIndex === row.length - 1 ? ' │' : ''}`).join('')}</Text></Box>)}</Box>;
+}
 function sanitizeMarkdown(text: string): string { return text.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '').replace(/<[^>]*>/g, ''); }
 function inlineMarkdown(text: string): React.ReactNode[] { const parts = text.split(/(\*\*[^*]+\*\*|`[^`]+`|\[[^\]]+\]\([^)]*\))/g); return parts.filter(Boolean).map((part, index) => { if (part.startsWith('**')) return <Text key={index} bold>{part.slice(2, -2)}</Text>; if (part.startsWith('`')) return <Text key={index} bold>{part.slice(1, -1)}</Text>; const link = /^\[([^\]]+)\]\([^)]*\)$/.exec(part); return <Text key={index} underline={Boolean(link)}>{link?.[1] ?? part}</Text>; }); }
 
@@ -278,17 +383,18 @@ export function applyAgentEvent(messages: TuiMessage[], event: AgentStreamEvent,
   return messages;
 }
 function appendToLast(messages: TuiMessage[], role: 'assistant' | 'thinking', delta: string): TuiMessage[] { const last = messages.at(-1); return last?.role === role ? [...messages.slice(0, -1), { role, text: `${last.text}${delta}` }] : [...messages, { role, text: delta }]; }
-interface CommandContext { app: ReturnType<typeof useApp>; config: AgentConfig; sessionId?: string; setSessionId: (value: string | undefined) => void; showReasoning: boolean; setShowReasoning: (value: boolean) => void; openPicker: (kind: PickerKind) => Promise<void>; appendSystem: (text: string) => void; appendError: (text: string) => void; persistEffort: (level: ThinkingLevel, targetSessionId?: string) => Promise<void>; setModel: (model: string) => void; resumeSession: (sessionId?: string) => Promise<void>; compactSession: typeof compactSession; memoryStatus: typeof memoryStatus; }
+interface CommandContext { app: ReturnType<typeof useApp>; config: AgentConfig; sessionId?: string; setSessionId: (value: string | undefined) => void; setSessionLabel: (value: string | undefined) => void; showReasoning: boolean; markPluginsForReload: () => void; setShowReasoning: (value: boolean) => void; openPicker: (kind: PickerKind) => Promise<void>; appendSystem: (text: string) => void; appendError: (text: string) => void; persistEffort: (level: ThinkingLevel, targetSessionId?: string) => Promise<void>; setModel: (model: string) => void; resumeSession: (sessionId?: string) => Promise<void>; compactSession: typeof compactSession; memoryStatus: typeof memoryStatus; }
 async function handleCommand(line: string, ctx: CommandContext): Promise<void> {
-  if (line === '/quit' || line === '/exit') { ctx.app.exit(); return; } if (line === '/help') { ctx.appendSystem(renderHelp().trim()); return; } if (line === '/new') { ctx.setSessionId(undefined); ctx.appendSystem('Started a new session.'); return; }
+  if (line === '/quit' || line === '/exit') { ctx.app.exit(); return; } if (line === '/help') { ctx.appendSystem(renderHelp().trim()); return; } if (line === '/new') { ctx.setSessionId(undefined); ctx.setSessionLabel(undefined); ctx.appendSystem('Started a new session.'); return; }
   if (line === '/trust') { new ProjectTrustStore().trust(ctx.config.workspaceRoot); ctx.config.projectTrusted = true; ctx.appendSystem('Workspace trusted for future runs.'); return; }
   if (line === '/fork') { if (!ctx.sessionId) { ctx.appendError('Start a session before forking it.'); return; } try { const child = await new JsonlSessionStore(`${ctx.config.workspaceRoot}/.nju-agent`).fork(ctx.sessionId); await ctx.resumeSession(child.id); } catch (error) { ctx.appendError(`Could not fork session: ${asMessage(error)}`); } return; }
   if (line === '/session') { const named = ctx.sessionId && ctx.config.session.enabled ? (await new JsonlSessionStore(`${ctx.config.workspaceRoot}/.nju-agent`).list()).find((item) => item.id === ctx.sessionId)?.name : undefined; ctx.appendSystem(`session: ${ctx.sessionId ?? '(new)'}${named ? `\nname: ${named}` : ''}\nmodel: ${ctx.config.model.model}\neffort: ${ctx.config.model.thinking.level}\nreasoning display: ${ctx.showReasoning ? 'on' : 'off'}\npermission: ${ctx.config.permissionMode}`); return; }
-  if (line === '/name' || line.startsWith('/name ')) { const name = line.slice(5).trim(); if (!ctx.sessionId) { ctx.appendError('Start a session before naming it.'); return; } if (!name) { ctx.appendError('Usage: /name <name>'); return; } await new JsonlSessionStore(`${ctx.config.workspaceRoot}/.nju-agent`).append(ctx.sessionId, createSessionNameEntry(ctx.sessionId, name.slice(0, 120))); ctx.appendSystem(`session name: ${name.slice(0, 120)}`); return; }
+  if (line === '/name' || line.startsWith('/name ') || line === '/rename' || line.startsWith('/rename ')) { const name = line.replace(/^\/(?:name|rename)/, '').trim(); if (!ctx.sessionId) { ctx.appendError('Start a session before naming it.'); return; } if (!name) { ctx.appendError('Usage: /rename <session_name>'); return; } const normalized = name.slice(0, 120); await new JsonlSessionStore(`${ctx.config.workspaceRoot}/.nju-agent`).append(ctx.sessionId, createSessionNameEntry(ctx.sessionId, normalized)); ctx.setSessionLabel(normalized); ctx.appendSystem(`session name: ${normalized}`); return; }
   if (line === '/reasoning' || line === '/thinking') { await ctx.openPicker('reasoning-display'); return; } if (/^\/(reasoning|thinking) /.test(line)) { const requested = line.replace(/^\/(reasoning|thinking)\s+/, ''); if (requested !== 'on' && requested !== 'off') { ctx.appendError('Usage: /reasoning [on|off]'); return; } ctx.setShowReasoning(requested === 'on'); ctx.appendSystem(`reasoning display: ${requested}`); return; }
   if (line === '/effort') { await ctx.openPicker('effort'); return; } if (line.startsWith('/effort ')) { const requested = line.slice(8).trim(); if (!isThinkingLevel(requested)) { ctx.appendError(`Invalid effort: ${requested}. Expected: ${supportedEffortText(ctx.config)}`); return; } const level = clampThinkingLevel(requested, ctx.config.model.thinking.map); await ctx.persistEffort(level); ctx.appendSystem(`effort: ${level}`); return; }
   if (line === '/model') { await ctx.openPicker('model'); return; } if (line.startsWith('/model ')) { ctx.setModel(line.slice(7).trim()); return; }
   if (line === '/memory') { const status = ctx.memoryStatus(ctx.config); ctx.appendSystem(`memory: ${status.enabled ? 'enabled' : 'disabled'}\ndirectory: ${status.directory}\nindex: ${status.indexExists ? `${status.indexLines} lines, ${status.indexBytes} bytes${status.truncated ? ' (truncated for context)' : ''}` : 'not created'}\ntopics: ${status.topics.join(', ') || '(none)'}`); return; }
+  if (line === '/reload') { try { const plugins = await loadUserPlugins(ctx.config.workspaceRoot, ctx.config.projectTrusted, true); ctx.markPluginsForReload(); ctx.appendSystem(`Reloaded ${plugins.length} user plugin(s). New tools will be active on the next agent run.`); } catch (error) { ctx.appendError(`Could not reload tools: ${asMessage(error)}`); } return; }
   if (line === '/compact') { if (!ctx.sessionId) { ctx.appendError('Start a session before compacting it.'); return; } try { const result = await ctx.compactSession(ctx.config, ctx.sessionId); ctx.appendSystem(result.compacted ? `Compacted ${result.omittedMessages} messages into a deterministic ${result.outputChars}-character summary.` : 'Not enough session history to compact.'); } catch (error) { ctx.appendError(`Could not compact session: ${asMessage(error)}`); } return; }
   if (line === '/sessions') { if (!ctx.config.session.enabled) { ctx.appendSystem('Sessions are disabled.'); return; } const sessions = await new JsonlSessionStore(`${ctx.config.workspaceRoot}/.nju-agent`).list(); ctx.appendSystem(sessions.length ? sessions.map((item) => `${item.name ? `${item.name} · ` : ''}${item.id}`).join('\n') : 'No sessions.'); return; }
   if (line === '/resume') { await ctx.openPicker('resume'); return; } if (line.startsWith('/resume ')) { await ctx.resumeSession(line.slice(8).trim() || undefined); return; } ctx.appendError(`Unknown command: ${line}`);

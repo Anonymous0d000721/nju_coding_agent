@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { applyAgentEvent, messagePresentation, sessionEntriesToTuiMessages, type TuiMessage } from '../../src/app/tui.js';
+import { applyAgentEvent, editorLinesWithCursor, isMarkdownTableSeparator, isMarkdownTableRow, messagePresentation, parseMarkdownTableRow, sessionEntriesToTuiMessages, type TuiMessage } from '../../src/app/tui.js';
+import { createEditorState } from '../../src/app/editor-state.js';
 import type { SessionEntry } from '../../src/session/session-types.js';
 import type { AgentStreamEvent } from '../../src/agent/types.js';
 
@@ -55,6 +56,24 @@ describe('TUI event rendering', () => {
     expect(completed).toEqual([
       { role: 'system', text: 'ready' },
       { role: 'tool', text: 'read_file · completed', ok: true, toolCallId: 'call-1' },
+    ]);
+  });
+
+  it('lists rename and reload commands', () => {
+    expect([' /rename', ' /reload'].map((value) => value.trim())).toEqual(['/rename', '/reload']);
+  });
+
+  it('recognizes and parses Markdown tables', () => {
+    expect(isMarkdownTableRow('| Name | Status |')).toBe(true);
+    expect(isMarkdownTableSeparator('| --- | :---: |')).toBe(true);
+    expect(parseMarkdownTableRow('| Name | Status |')).toEqual(['Name', 'Status']);
+  });
+
+  it('keeps the visible editor cursor on the active multiline line', () => {
+    const editor = { ...createEditorState(), text: 'first\\nsecond', cursorOffset: 8 };
+    expect(editorLinesWithCursor(editor)).toEqual([
+      { before: 'first', at: '', after: '' },
+      { before: 'se', at: 'c', after: 'ond' },
     ]);
   });
 
