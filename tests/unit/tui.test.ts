@@ -1,8 +1,12 @@
+import { mkdtemp } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { applyAgentEvent, editorLinesWithCursor, formatStatusBar, isMarkdownTableSeparator, isMarkdownTableRow, messagePresentation, parseMarkdownTableRow, sessionEntriesToTuiMessages, toggleLastToolDetails, transcriptPageSize, transcriptWindow, type TuiMessage } from '../../src/app/tui.js';
+import { applyAgentEvent, editorLinesWithCursor, ensureNamedSession, fileReferenceToken, findFileCompletions, formatStatusBar, isMarkdownTableSeparator, isMarkdownTableRow, messagePresentation, parseMarkdownTableRow, replaceFileReference, sessionEntriesToTuiMessages, toggleLastToolDetails, transcriptPageSize, transcriptWindow, type TuiMessage } from '../../src/app/tui.js';
 import { createEditorState } from '../../src/app/editor-state.js';
 import type { SessionEntry } from '../../src/session/session-types.js';
 import type { AgentStreamEvent } from '../../src/agent/types.js';
+import { JsonlSessionStore } from '../../src/session/jsonl-store.js';
 
 const base: TuiMessage[] = [{ role: 'system', text: 'ready' }];
 
@@ -92,6 +96,32 @@ describe('TUI event rendering', () => {
 
   it('lists rename and reload commands', () => {
     expect([' /rename', ' /reload'].map((value) => value.trim())).toEqual(['/rename', '/reload']);
+  });
+
+  it('creates and names a new session before the first prompt', async () => {
+    const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), 'nju-agent-tui-'));
+    const config = {
+      workspaceRoot,
+      model: { model: 'test-model' },
+    } as Parameters<typeof ensureNamedSession>[0];
+    const result = await ensureNamedSession(config, undefined, 'debug session');
+    const session = await new JsonlSessionStore(`${workspaceRoot}/.nju-agent`).open(result.sessionId);
+
+    expect(result.sessionId).toBe(session.id);
+    expect(session.entries.at(-1)).toMatchObject({ type: 'session_name', name: 'debug session' });
+  });
+
+  it('completes workspace-relative @ file references and replaces the token', async () => {
+    const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), 'nju-agent-files-'));
+    const fs = await import('node:fs/promises');
+    await fs.mkdir(path.join(workspaceRoot, 'src'), { recursive: true });
+    await fs.writeFile(path.join(workspaceRoot, 'src', 'app.ts'), 'export const app = true;');
+    await fs.writeFile(path.join(workspaceRoot, 'README.md'), '# nju-agent');
+
+    expect(fileReferenceToken('review @src/ap')).toEqual({ start: 7, query: 'src/ap' });
+    expect(fileReferenceToken('plain text')).toBeUndefined();
+    await expect(findFileCompletions(workspaceRoot, 'src/ap')).resolves.toEqual([{ name: 'src/app.ts', description: 'file', kind: 'file' }]);
+    expect(replaceFileReference({ text: 'review @src/ap', cursorOffset: 14, history: [] }, 'src/app.ts')).toMatchObject({ text: 'review @src/app.ts ', cursorOffset: 19 });
   });
 
   it('recognizes and parses Markdown tables', () => {

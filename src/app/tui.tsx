@@ -1,4 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
+import fs from 'node:fs/promises';
+import path from 'node:path';
 import { stdin as defaultStdin, stdout as defaultStdout } from 'node:process';
 import { Box, Text, render, useApp, useInput, useWindowSize } from 'ink';
 import type { AgentRunControl, AgentStreamEvent } from '../agent/types.js';
@@ -10,7 +12,7 @@ import type { AgentConfig } from '../shared/config.js';
 import { redact } from '../shared/redact.js';
 import type { ToolDefinition } from '../tools/types.js';
 import { ProjectTrustStore } from '../shared/trust.js';
-import { renderHelp } from './renderer.js';
+import { renderHelp, renderVersion } from './renderer.js';
 import { backspace, createEditorState, deleteForward, graphemeBoundaries, insertPaste, insertText, moveDown, moveLeft, moveRight, moveUp, parseBracketedPaste, slashCompletions, submitEditor, type EditorState } from './editor-state.js';
 import type { SessionEntry } from '../session/session-types.js';
 import type { AppResult, AppServices, compactSession, memoryStatus, runPrompt } from './app.js';
@@ -22,6 +24,7 @@ type TuiStatus = 'idle' | 'hydrating' | 'running' | 'cancelling' | 'error';
 type PickerKind = 'resume' | 'model' | 'effort' | 'reasoning-display';
 type PickerOption = { label: string; value: string; description?: string; disabled?: boolean };
 type PickerState = { kind: PickerKind; title: string; options: PickerOption[]; index: number };
+type CompletionItem = { name: string; description: string; kind: 'command' | 'file' };
 export type TuiMessage =
   | { role: 'user' | 'assistant' | 'thinking' | 'system' | 'error' | 'cancelled'; text: string }
   | { role: 'tool'; text: string; preview?: string; detail?: string; expanded?: boolean; ok?: boolean; toolCallId?: string };
@@ -56,6 +59,7 @@ function TuiApp({ config, runPrompt, compactSession, memoryStatus }: TuiOptions)
   const [pasteBuffer, setPasteBuffer] = useState('');
   const [completionIndex, setCompletionIndex] = useState(0);
   const [completionDismissed, setCompletionDismissed] = useState(false);
+  const [fileCompletions, setFileCompletions] = useState<CompletionItem[]>([]);
   const [historyHasMore, setHistoryHasMore] = useState(false);
   const [historyCursor, setHistoryCursor] = useState<string>();
   const [transcriptOffset, setTranscriptOffset] = useState(0);
@@ -76,8 +80,17 @@ function TuiApp({ config, runPrompt, compactSession, memoryStatus }: TuiOptions)
   const append = (message: TuiMessage) => setMessages((items) => [...items, message]);
   const appendSystem = (text: string) => append({ role: 'system', text });
   const appendError = (text: string) => { setStatus('error'); append({ role: 'error', text }); };
-  const completion = !picker && !completionDismissed ? slashCompletions(editor.text, TUI_COMMANDS) : [];
+  const commandCompletions: CompletionItem[] = slashCompletions(editor.text, TUI_COMMANDS).map((item) => ({ ...item, kind: 'command' }));
+  const completion = !picker && !completionDismissed ? (editor.text.startsWith('/') ? commandCompletions : fileCompletions) : [];
   const updateEditor = (transition: (state: EditorState) => EditorState) => { setCompletionDismissed(false); setCompletionIndex(0); setEditor(transition); };
+  useEffect(() => {
+    let active = true;
+    if (picker || completionDismissed || editor.text.startsWith('/')) { setFileCompletions([]); return () => { active = false; }; }
+    const token = fileReferenceToken(editor.text);
+    if (!token) { setFileCompletions([]); return () => { active = false; }; }
+    void findFileCompletions(config.workspaceRoot, token.query).then((items) => { if (active) setFileCompletions(items); }).catch(() => { if (active) setFileCompletions([]); });
+    return () => { active = false; };
+  }, [config.workspaceRoot, editor.text, picker, completionDismissed]);
 
   const persistEffort = async (level: ThinkingLevel, targetSessionId = sessionId) => {
     config.model.thinking = { ...config.model.thinking, level };
@@ -261,11 +274,11 @@ function TuiApp({ config, runPrompt, compactSession, memoryStatus }: TuiOptions)
     if (completion.length && (key.tab || key.return)) {
       const selected = completion[completionIndex] ?? completion[0];
       if (selected) {
-        if (key.return) {
+        if (key.return && selected.kind === 'command') {
           updateEditor((state) => createEditorState(state.history));
           void handleCommand(selected.name, { app, config, sessionId, setSessionId, setSessionLabel, showReasoning, setShowReasoning, openPicker, appendSystem, appendError, persistEffort, setModel, resumeSession, compactSession, memoryStatus, markPluginsForReload });
         } else {
-          updateEditor((state) => ({ ...state, text: selected.name, cursorOffset: selected.name.length }));
+          updateEditor((state) => replaceFileReference(state, selected.name));
         }
       }
       return;
@@ -332,8 +345,9 @@ export function editorLinesWithCursor(editor: EditorState): Array<{ before: stri
     return { before: line.slice(0, local), at: line.slice(local, boundary), after: line.slice(boundary) };
   });
 }
-function CompletionView({ items, selectedIndex }: { items: readonly { name: string; description: string }[]; selectedIndex: number }) {
-  return <Box flexDirection="column"><Text color="cyan">commands · ↑/↓ choose · Tab/Enter accept · Esc cancel</Text>{items.map((item, index) => <Box key={item.name} width="100%" backgroundColor={index === selectedIndex ? 'gray' : undefined}><Text color={index === selectedIndex ? 'white' : 'gray'}>{index === selectedIndex ? '› ' : '  '}{item.name} — {item.description}</Text></Box>)}</Box>;
+function CompletionView({ items, selectedIndex }: { items: readonly CompletionItem[]; selectedIndex: number }) {
+  const files = items.some((item) => item.kind === 'file');
+  return <Box flexDirection="column"><Text color="cyan">{files ? 'files' : 'commands'} · ↑/↓ choose · Tab/Enter accept · Esc cancel</Text>{items.map((item, index) => <Box key={`${item.kind}-${item.name}`} width="100%" backgroundColor={index === selectedIndex ? 'gray' : undefined}><Text color={index === selectedIndex ? 'white' : 'gray'}>{index === selectedIndex ? '› ' : '  '}{item.name} — {item.description}</Text></Box>)}</Box>;
 }
 function ApprovalView({ tool }: { tool: ToolDefinition }) {
   return <Box flexDirection="column"><Text color="yellow">Allow {tool.name} · {tool.risk}</Text><Text color="gray">{tool.description}</Text><Text color="gray">Enter/y allow · n/Esc deny</Text></Box>;
@@ -435,11 +449,11 @@ function appendToLast(messages: TuiMessage[], role: 'assistant' | 'thinking', de
 function toolDetail(content: string): string { const redacted = redact(content); const lines = redacted.split(/\r?\n/); return lines.length > 120 ? `${lines.slice(0, 120).join('\n')}\n…` : redacted; }
 interface CommandContext { app: ReturnType<typeof useApp>; config: AgentConfig; sessionId?: string; setSessionId: (value: string | undefined) => void; setSessionLabel: (value: string | undefined) => void; showReasoning: boolean; markPluginsForReload: () => void; setShowReasoning: (value: boolean) => void; openPicker: (kind: PickerKind) => Promise<void>; appendSystem: (text: string) => void; appendError: (text: string) => void; persistEffort: (level: ThinkingLevel, targetSessionId?: string) => Promise<void>; setModel: (model: string) => void; resumeSession: (sessionId?: string) => Promise<void>; compactSession: typeof compactSession; memoryStatus: typeof memoryStatus; }
 async function handleCommand(line: string, ctx: CommandContext): Promise<void> {
-  if (line === '/quit' || line === '/exit') { ctx.app.exit(); return; } if (line === '/help') { ctx.appendSystem(renderHelp().trim()); return; } if (line === '/new') { ctx.setSessionId(undefined); ctx.setSessionLabel(undefined); ctx.appendSystem('Started a new session.'); return; }
+  if (line === '/quit' || line === '/exit') { ctx.app.exit(); return; } if (line === '/help') { ctx.appendSystem(renderHelp().trim()); return; } if (line === '/new') { await ctx.resumeSession(undefined); return; }
   if (line === '/trust') { new ProjectTrustStore().trust(ctx.config.workspaceRoot); ctx.config.projectTrusted = true; ctx.appendSystem('Workspace trusted for future runs.'); return; }
   if (line === '/fork') { if (!ctx.sessionId) { ctx.appendError('Start a session before forking it.'); return; } try { const child = await new JsonlSessionStore(`${ctx.config.workspaceRoot}/.nju-agent`).fork(ctx.sessionId); await ctx.resumeSession(child.id); } catch (error) { ctx.appendError(`Could not fork session: ${asMessage(error)}`); } return; }
   if (line === '/session') { const named = ctx.sessionId && ctx.config.session.enabled ? (await new JsonlSessionStore(`${ctx.config.workspaceRoot}/.nju-agent`).list()).find((item) => item.id === ctx.sessionId)?.name : undefined; ctx.appendSystem(`session: ${ctx.sessionId ?? '(new)'}${named ? `\nname: ${named}` : ''}\nmodel: ${ctx.config.model.model}\neffort: ${ctx.config.model.thinking.level}\nreasoning display: ${ctx.showReasoning ? 'on' : 'off'}\npermission: ${ctx.config.permissionMode}`); return; }
-  if (line === '/name' || line.startsWith('/name ') || line === '/rename' || line.startsWith('/rename ')) { const name = line.replace(/^\/(?:name|rename)/, '').trim(); if (!ctx.sessionId) { ctx.appendError('Start a session before naming it.'); return; } if (!name) { ctx.appendError('Usage: /rename <session_name>'); return; } const normalized = name.slice(0, 120); await new JsonlSessionStore(`${ctx.config.workspaceRoot}/.nju-agent`).append(ctx.sessionId, createSessionNameEntry(ctx.sessionId, normalized)); ctx.setSessionLabel(normalized); ctx.appendSystem(`session name: ${normalized}`); return; }
+  if (line === '/name' || line.startsWith('/name ') || line === '/rename' || line.startsWith('/rename ')) { const name = line.replace(/^\/(?:name|rename)/, '').trim(); if (!name) { ctx.appendError('Usage: /rename <session_name>'); return; } if (!ctx.config.session.enabled) { ctx.appendError('Sessions are disabled.'); return; } const normalized = name.slice(0, 120); try { const named = await ensureNamedSession(ctx.config, ctx.sessionId, normalized); ctx.config.session.id = named.sessionId; ctx.setSessionId(named.sessionId); ctx.setSessionLabel(normalized); ctx.appendSystem(`session name: ${normalized}`); } catch (error) { ctx.appendError(`Could not name session: ${asMessage(error)}`); } return; }
   if (line === '/reasoning' || line === '/thinking') { await ctx.openPicker('reasoning-display'); return; } if (/^\/(reasoning|thinking) /.test(line)) { const requested = line.replace(/^\/(reasoning|thinking)\s+/, ''); if (requested !== 'on' && requested !== 'off') { ctx.appendError('Usage: /reasoning [on|off]'); return; } ctx.setShowReasoning(requested === 'on'); ctx.appendSystem(`reasoning display: ${requested}`); return; }
   if (line === '/effort') { await ctx.openPicker('effort'); return; } if (line.startsWith('/effort ')) { const requested = line.slice(8).trim(); if (!isThinkingLevel(requested)) { ctx.appendError(`Invalid effort: ${requested}. Expected: ${supportedEffortText(ctx.config)}`); return; } const level = clampThinkingLevel(requested, ctx.config.model.thinking.map); await ctx.persistEffort(level); ctx.appendSystem(`effort: ${level}`); return; }
   if (line === '/model') { await ctx.openPicker('model'); return; } if (line.startsWith('/model ')) { ctx.setModel(line.slice(7).trim()); return; }
@@ -458,4 +472,45 @@ function supportedThinkingLevels(config: AgentConfig): ThinkingLevel[] { return 
 function supportedEffortText(config: AgentConfig): string { return supportedThinkingLevels(config).join(', '); }
 function modelSuggestions(config: AgentConfig): string[] { return config.model.apiFormat === 'anthropic' ? ['claude-sonnet-4-5', 'claude-3-5-sonnet-latest'] : ['gpt-5', 'gpt-5-mini', 'gpt-4.1']; }
 function unique(values: string[]): string[] { return [...new Set(values.filter(Boolean))]; }
+export async function ensureNamedSession(config: AgentConfig, sessionId: string | undefined, name: string): Promise<{ sessionId: string }> {
+  const store = new JsonlSessionStore(`${config.workspaceRoot}/.nju-agent`);
+  const session = sessionId
+    ? await store.open(sessionId)
+    : await store.create({ cwd: config.workspaceRoot, model: config.model.model, appVersion: renderVersion().trim() });
+  await store.append(session.id, createSessionNameEntry(session.id, name));
+  return { sessionId: session.id };
+}
+export function fileReferenceToken(text: string): { start: number; query: string } | undefined {
+  const match = /(?:^|\s)@([^\s]*)$/.exec(text);
+  return match ? { start: match.index + match[0].length - match[1]!.length - 1, query: match[1]! } : undefined;
+}
+export function replaceFileReference(state: EditorState, filePath: string): EditorState {
+  const token = fileReferenceToken(state.text.slice(0, state.cursorOffset));
+  if (!token) return state;
+  const before = state.text.slice(0, token.start);
+  const after = state.text.slice(state.cursorOffset);
+  const replacement = `@${filePath} `;
+  const text = `${before}${replacement}${after}`;
+  return { ...state, text, cursorOffset: before.length + replacement.length };
+}
+export async function findFileCompletions(workspaceRoot: string, query: string, limit = 30): Promise<CompletionItem[]> {
+  const results: CompletionItem[] = [];
+  const root = path.resolve(workspaceRoot);
+  async function visit(directory: string): Promise<void> {
+    if (results.length >= limit) return;
+    let entries;
+    try { entries = await fs.readdir(directory, { withFileTypes: true }); } catch { return; }
+    for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
+      if (results.length >= limit) return;
+      if (entry.name.startsWith('.') && entry.isDirectory()) continue;
+      if (['node_modules', '.git', '.nju-agent', 'dist'].includes(entry.name) && entry.isDirectory()) continue;
+      const absolute = path.join(directory, entry.name);
+      const relative = path.relative(root, absolute).replace(/\\/g, '/');
+      if (entry.isDirectory()) await visit(absolute);
+      else if (relative.toLowerCase().startsWith(query.toLowerCase())) results.push({ name: relative, description: 'file', kind: 'file' });
+    }
+  }
+  await visit(root);
+  return results;
+}
 function asMessage(error: unknown): string { return error instanceof Error ? error.message : String(error); }
