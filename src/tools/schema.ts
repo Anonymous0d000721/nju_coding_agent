@@ -6,6 +6,17 @@ export interface ValidationResult {
 }
 
 export function validateJsonSchema(value: unknown, schema: JsonSchema, path = 'args'): ValidationResult {
+  if (Array.isArray(schema.oneOf)) {
+    const failures: string[] = [];
+    for (const candidate of schema.oneOf) {
+      if (!isRecord(candidate)) continue;
+      const result = validateJsonSchema(value, candidate, path);
+      if (result.ok) return result;
+      if (result.message) failures.push(result.message);
+    }
+    return { ok: false, message: `${path} does not match any allowed shape${failures[0] ? `: ${failures[0]}` : ''}` };
+  }
+
   const type = schema.type;
   if (typeof type === 'string') {
     const typeResult = validateType(value, type, path);
@@ -14,6 +25,12 @@ export function validateJsonSchema(value: unknown, schema: JsonSchema, path = 'a
 
   if (schema.enum && Array.isArray(schema.enum) && !schema.enum.includes(value)) {
     return { ok: false, message: `${path} must be one of: ${schema.enum.join(', ')}` };
+  }
+  if (typeof schema.pattern === 'string' && typeof value === 'string' && !new RegExp(schema.pattern).test(value)) {
+    return { ok: false, message: `${path} has an invalid format` };
+  }
+  if (type === 'array' && typeof schema.minItems === 'number' && Array.isArray(value) && value.length < schema.minItems) {
+    return { ok: false, message: `${path} must contain at least ${schema.minItems} item(s)` };
   }
 
   if (type === 'object' || schema.properties) {

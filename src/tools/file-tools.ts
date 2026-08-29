@@ -1,12 +1,13 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import type { ToolDefinition, ToolContext } from './types.js';
 import { assertSafeWritePath, normalizeRelative, resolveWorkspacePath } from './path-guard.js';
 
 const MAX_READ_LINES = 400;
 const MAX_LIST_ENTRIES = 300;
 const MAX_SEARCH_RESULTS = 100;
+const fileLocks = new Map<string, Promise<void>>();
 
 export function createFileTools(): ToolDefinition[] {
   return [listFilesTool(), readFileTool(), writeFileTool(), hashlineEditTool(), globFilesTool(), grepFilesTool()];
@@ -57,7 +58,8 @@ function readFileTool(): ToolDefinition {
       const buffer = await fs.readFile(resolved.absolutePath);
       rejectBinary(buffer);
       const text = buffer.toString('utf8');
-      const lines = splitLines(text);
+      const document = parseText(text);
+      const lines = document.lines;
       const offset = Math.max(1, asNumber(input.offset, 1));
       const limit = Math.max(1, Math.min(asNumber(input.limit, MAX_READ_LINES), MAX_READ_LINES));
       const selected = lines.slice(offset - 1, offset - 1 + limit);
@@ -71,6 +73,9 @@ function readFileTool(): ToolDefinition {
         lines: selected.length,
         totalLines: lines.length,
         fileHash: fileHash(text),
+        anchorFormat: 'LINE#HASH',
+        lineHashLength: 6,
+        newlineStyle: document.newlineStyle,
         format,
         content,
         truncated: offset - 1 + selected.length < lines.length,
@@ -95,8 +100,9 @@ function writeFileTool(): ToolDefinition {
       const resolved = await resolveWorkspacePath(ctx.workspaceRoot, asString(input.path));
       assertSafeWritePath(resolved.relativePath);
       if (input.createDirectories === true) await fs.mkdir(path.dirname(resolved.absolutePath), { recursive: true });
-      await fs.writeFile(resolved.absolutePath, asString(input.content), 'utf8');
-      return { path: resolved.relativePath, bytes: Buffer.byteLength(asString(input.content), 'utf8'), fileHash: fileHash(asString(input.content)) };
+      const content = asString(input.content);
+      await withFileLock(resolved.absolutePath, () => atomicWrite(resolved.absolutePath, content));
+      return { path: resolved.relativePath, bytes: Buffer.byteLength(content, 'utf8'), fileHash: fileHash(content) };
     },
   };
 }
@@ -104,11 +110,15 @@ function writeFileTool(): ToolDefinition {
 function hashlineEditTool(): ToolDefinition {
   return {
     name: 'hashline_edit',
-    description: 'Edit a text file using LINE#HASH anchors from read_file(format=hashline).',
+    description: 'Edit a text file using LINE#HASH anchors from read_file(format=hashline). Re-read after any stale-anchor error.',
     parameters: objectSchema({
       path: { type: 'string' },
       expectedFileHash: { type: 'string' },
-      edits: { type: 'array', items: { type: 'object' } },
+      edits: { type: 'array', minItems: 1, items: { oneOf: [
+        objectSchema({ op: { type: 'string', enum: ['replace'] }, start: { type: 'string', pattern: '^\\d+#[a-fA-F0-9]{6}:?$' }, end: { type: 'string', pattern: '^\\d+#[a-fA-F0-9]{6}:?$' }, content: { type: 'string' } }, ['op', 'start', 'content']),
+        objectSchema({ op: { type: 'string', enum: ['delete'] }, start: { type: 'string', pattern: '^\\d+#[a-fA-F0-9]{6}:?$' }, end: { type: 'string', pattern: '^\\d+#[a-fA-F0-9]{6}:?$' } }, ['op', 'start']),
+        objectSchema({ op: { type: 'string', enum: ['insert_before', 'insert_after'] }, anchor: { type: 'string', pattern: '^\\d+#[a-fA-F0-9]{6}:?$' }, content: { type: 'string' } }, ['op', 'anchor', 'content']),
+      ] } },
     }, ['path', 'edits']),
     risk: 'write',
     readonly: false,
@@ -117,23 +127,37 @@ function hashlineEditTool(): ToolDefinition {
       const resolved = await resolveWorkspacePath(ctx.workspaceRoot, asString(input.path));
       assertSafeWritePath(resolved.relativePath);
       if (!Array.isArray(input.edits)) throw Object.assign(new Error('edits must be an array'), { code: 'invalid_arguments' });
-      const original = await fs.readFile(resolved.absolutePath, 'utf8');
-      if (typeof input.expectedFileHash === 'string' && input.expectedFileHash !== fileHash(original)) {
-        throw Object.assign(new Error('File hash changed; re-read hashline anchors before editing'), { code: 'file_revision_mismatch' });
-      }
-      const lines = splitLines(original);
-      const ranges = input.edits.map((edit) => normalizeEdit(asRecord(edit), lines));
-      ensureNonOverlapping(ranges);
-      const next = [...lines];
-      for (const edit of ranges.sort((a, b) => b.start - a.start)) {
-        if (edit.op === 'delete') next.splice(edit.start, edit.end - edit.start + 1);
-        if (edit.op === 'replace') next.splice(edit.start, edit.end - edit.start + 1, ...splitLines(edit.content ?? ''));
-        if (edit.op === 'insert_before') next.splice(edit.start, 0, ...splitLines(edit.content ?? ''));
-        if (edit.op === 'insert_after') next.splice(edit.start + 1, 0, ...splitLines(edit.content ?? ''));
-      }
-      const nextText = next.join('\n');
-      await fs.writeFile(resolved.absolutePath, nextText, 'utf8');
-      return { path: resolved.relativePath, fileHash: fileHash(nextText), preview: diffPreview(lines, next) };
+      return withFileLock(resolved.absolutePath, async () => {
+        const buffer = await fs.readFile(resolved.absolutePath);
+        rejectBinary(buffer);
+        const original = buffer.toString('utf8');
+        const document = parseText(original);
+        if (typeof input.expectedFileHash === 'string' && input.expectedFileHash !== fileHash(original)) {
+          throw editError('file_revision_mismatch', 'File hash changed since it was read', '请重新调用 read_file(format="hashline") 获取新的锚点。', { expectedFileHash: input.expectedFileHash, actualFileHash: fileHash(original) });
+        }
+        const edits = input.edits as unknown[];
+        const ranges: NormalizedEdit[] = edits.map((edit: unknown) => normalizeEdit(asRecord(edit), document.lines));
+        ensureNonOverlapping(ranges);
+        const next = [...document.lines];
+        for (const edit of ranges.sort((a, b) => b.start - a.start)) {
+          if (edit.op === 'delete') next.splice(edit.start, edit.end - edit.start + 1);
+          if (edit.op === 'replace') next.splice(edit.start, edit.end - edit.start + 1, ...contentLines(edit.content ?? ''));
+          if (edit.op === 'insert_before') next.splice(edit.start, 0, ...contentLines(edit.content ?? ''));
+          if (edit.op === 'insert_after') next.splice(edit.start + 1, 0, ...contentLines(edit.content ?? ''));
+        }
+        const nextText = serializeText(next, document.newlineStyle, document.trailingNewline);
+        await atomicWrite(resolved.absolutePath, nextText);
+        const changed = changedAnchors(next, ranges);
+        return {
+          path: resolved.relativePath,
+          previousFileHash: fileHash(original),
+          fileHash: fileHash(nextText),
+          newlineStyle: document.newlineStyle,
+          editsApplied: ranges.length,
+          changedAnchors: changed,
+          preview: diffPreview(document.lines, next),
+        };
+      });
     },
   };
 }
@@ -179,7 +203,7 @@ function grepFilesTool(): ToolDefinition {
         if (glob && !glob.test(rel)) return;
         const buffer = await fs.readFile(absolute);
         if (isBinary(buffer)) return;
-        splitLines(buffer.toString('utf8')).forEach((line, index) => {
+        parseText(buffer.toString('utf8')).lines.forEach((line, index) => {
           if (matches.length < MAX_SEARCH_RESULTS && pattern.test(line)) matches.push({ path: rel, line: index + 1, text: line.slice(0, 240) });
         });
       });
@@ -205,20 +229,20 @@ interface NormalizedEdit { op: string; start: number; end: number; content?: str
 
 function normalizeEdit(edit: Record<string, unknown>, lines: string[]): NormalizedEdit {
   const op = asString(edit.op);
-  if (!['replace', 'delete', 'insert_before', 'insert_after'].includes(op)) throw Object.assign(new Error(`Invalid edit op: ${op}`), { code: 'invalid_arguments' });
   const startAnchor = op.startsWith('insert_') ? asString(edit.anchor) : asString(edit.start);
   const start = validateAnchor(startAnchor, lines);
-  const end = edit.end ? validateAnchor(asString(edit.end), lines) : start;
-  if (end < start) throw Object.assign(new Error('edit end is before start'), { code: 'invalid_anchor' });
+  const end = edit.end === undefined ? start : validateAnchor(asString(edit.end), lines);
+  if (end < start) throw editError('invalid_anchor', 'Edit end is before edit start', '请重新读取文件并确认 start/end 顺序。');
   return { op, start, end, content: typeof edit.content === 'string' ? edit.content : undefined };
 }
 
 function validateAnchor(anchor: string, lines: string[]): number {
-  const match = /^(\d+)#([a-f0-9]{6})$/i.exec(anchor);
-  if (!match) throw Object.assign(new Error(`Invalid hashline anchor: ${anchor}`), { code: 'invalid_anchor' });
+  const normalized = anchor.trim().replace(/:$/, '');
+  const match = /^(\d+)#([a-f0-9]{6})$/i.exec(normalized);
+  if (!match) throw editError('invalid_anchor', `Invalid hashline anchor: ${anchor}`, '锚点应为 LINE#HASH；可直接复制 read_file 的锚点，但不要复制整行内容。');
   const index = Number(match[1]) - 1;
-  if (index < 0 || index >= lines.length) throw Object.assign(new Error(`Anchor not found: ${anchor}`), { code: 'anchor_not_found' });
-  if (lineHash(lines[index]) !== match[2].toLowerCase()) throw Object.assign(new Error(`Stale hashline anchor: ${anchor}`), { code: 'stale_anchor' });
+  if (index < 0 || index >= lines.length) throw editError('anchor_not_found', `Anchor not found: ${anchor}`, '请重新调用 read_file(format="hashline") 获取当前文件锚点。');
+  if (lineHash(lines[index]) !== match[2].toLowerCase()) throw editError('stale_anchor', `Stale hashline anchor: ${anchor}`, '文件已变化，请重新调用 read_file(format="hashline")，不要复用旧锚点。');
   return index;
 }
 
@@ -239,6 +263,63 @@ function objectSchema(properties: Record<string, unknown>, required: string[] = 
   return { type: 'object', properties, required, additionalProperties: false };
 }
 
+function editError(code: string, message: string, hint: string, details?: unknown): Error & { code: string; details: unknown } {
+  return Object.assign(new Error(message), { code, details: { ...(typeof details === 'object' && details !== null ? details : {}), hint } });
+}
+
+function parseText(text: string): { lines: string[]; newlineStyle: 'LF' | 'CRLF'; trailingNewline: boolean } {
+  const newlineStyle = text.includes('\r\n') ? 'CRLF' : 'LF';
+  const normalized = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  const trailingNewline = normalized.endsWith('\n');
+  const body = trailingNewline ? normalized.slice(0, -1) : normalized;
+  return { lines: body.length === 0 ? [''] : body.split('\n'), newlineStyle, trailingNewline };
+}
+
+function contentLines(content: string): string[] {
+  const normalized = content.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  const body = normalized.endsWith('\n') ? normalized.slice(0, -1) : normalized;
+  return body.length === 0 ? [''] : body.split('\n');
+}
+
+function serializeText(lines: string[], newlineStyle: 'LF' | 'CRLF', trailingNewline: boolean): string {
+  const body = lines.join('\n');
+  const normalized = trailingNewline ? `${body}\n` : body;
+  return newlineStyle === 'CRLF' ? normalized.replace(/\n/g, '\r\n') : normalized;
+}
+
+function changedAnchors(lines: string[], edits: NormalizedEdit[]): Array<{ line: number; anchor: string; content: string }> {
+  const start = Math.max(0, Math.min(...edits.map((edit) => edit.start)) - 1);
+  const end = Math.min(lines.length, Math.max(...edits.map((edit) => edit.end)) + 2);
+  return lines.slice(start, end).map((content, index) => {
+    const line = start + index + 1;
+    return { line, anchor: `${line}#${lineHash(content)}`, content };
+  });
+}
+
+async function atomicWrite(target: string, content: string): Promise<void> {
+  const temporary = path.join(path.dirname(target), `.${path.basename(target)}.${randomUUID()}.tmp`);
+  try {
+    await fs.writeFile(temporary, content, 'utf8');
+    try { await fs.rename(temporary, target); }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST' && (error as NodeJS.ErrnoException).code !== 'EPERM') throw error;
+      await fs.rm(target, { force: true });
+      await fs.rename(temporary, target);
+    }
+  } finally { await fs.rm(temporary, { force: true }); }
+}
+
+async function withFileLock<T>(file: string, operation: () => Promise<T>): Promise<T> {
+  const previous = fileLocks.get(file) ?? Promise.resolve();
+  let release!: () => void;
+  const current = new Promise<void>((resolve) => { release = resolve; });
+  const queued = previous.then(() => current);
+  fileLocks.set(file, queued);
+  await previous;
+  try { return await operation(); }
+  finally { release(); if (fileLocks.get(file) === queued) fileLocks.delete(file); }
+}
+
 function asRecord(value: unknown): Record<string, unknown> {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) throw Object.assign(new Error('args must be an object'), { code: 'invalid_arguments' });
   return value as Record<string, unknown>;
@@ -254,10 +335,6 @@ function asNumber(value: unknown, fallback: number): number {
   if (value === undefined) return fallback;
   if (typeof value !== 'number') throw Object.assign(new Error('expected number argument'), { code: 'invalid_arguments' });
   return value;
-}
-
-function splitLines(text: string): string[] {
-  return text.replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n');
 }
 
 function lineHash(line: string): string {

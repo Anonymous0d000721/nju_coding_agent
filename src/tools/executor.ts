@@ -34,7 +34,7 @@ export class ToolExecutor {
       const observation = boundedObservation(value);
       return { toolCallId: call.id, toolName: call.name, ok: true, content: observation.content, details: value, truncated: observation.truncated, elapsedMs: Date.now() - started };
     } catch (error) {
-      return failure(call.id, call.name, codeOf(error), messageOf(error), Date.now() - started);
+      return failure(call.id, call.name, codeOf(error), messageOf(error), Date.now() - started, detailsOf(error));
     }
   }
 
@@ -45,8 +45,11 @@ export class ToolExecutor {
   }
 }
 
-function failure(toolCallId: string, toolName: string, code: string, message: string, elapsedMs: number): ToolResult {
-  return { toolCallId, toolName, ok: false, content: `Tool ${toolName} failed (${code}): ${message}`, error: { code, message, recoverable: true }, elapsedMs };
+function failure(toolCallId: string, toolName: string, code: string, message: string, elapsedMs: number, details?: unknown): ToolResult {
+  const detailRecord = isRecord(details) ? details : undefined;
+  const hint = typeof detailRecord?.hint === 'string' ? detailRecord.hint : undefined;
+  const content = `Tool ${toolName} failed (${code}): ${message}${hint ? `\nHint: ${hint}` : ''}`;
+  return { toolCallId, toolName, ok: false, content, details, error: { code, message, recoverable: true, details }, elapsedMs };
 }
 
 function boundedObservation(value: unknown): { content: string; truncated: boolean } {
@@ -59,4 +62,10 @@ function messageOf(error: unknown): string { return error instanceof Error ? err
 function codeOf(error: unknown): string {
   if (typeof error === 'object' && error !== null && 'code' in error && typeof (error as { code?: unknown }).code === 'string') return (error as { code: string }).code;
   return 'internal_error';
+}
+function detailsOf(error: unknown): unknown {
+  return typeof error === 'object' && error !== null && 'details' in error ? (error as { details?: unknown }).details : undefined;
+}
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
