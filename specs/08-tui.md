@@ -261,7 +261,7 @@ type AgentStreamEvent =
 - `done`：只用于结束当前 assistant item；不得重复显示完整文本。
 - `tool_call`：在执行期间显示紧凑工具活动卡片（工具名和 running 状态）；默认不显示完整 arguments。
 - `tool_result`：更新对应活动卡片为完成/失败的紧凑摘要；**run 完成后不得在 transcript 末尾额外追加工具调用结果总览或重复摘要**。
-- tool 详细输出第一版不展开；后续可通过 `Ctrl+O` 或 item toggle 加。
+- tool 默认只显示统一 preview；`Ctrl+O` 展开或折叠最近一个已有结果的工具详情，详情仍必须经过脱敏与长度限制。
 
 ## 9. Slash command 语义
 
@@ -292,6 +292,7 @@ type AgentStreamEvent =
 - hydration 必须从 JSONL 解析 user、assistant、tool lifecycle、run notice、model/thinking changes；只影响 LLM context 的 entry 与只影响 UI 的 entry 必须明确区分。不得从 event 字段、工具输出或未知 JSON 中执行任何内容。
 - 历史 assistant/tool 内容必须沿用当前 Markdown、tool-card 与 redaction 规则。历史 reasoning 仅在 session 确实持久化它且 `showReasoning=true` 时显示；缺失 reasoning 不得伪造。
 - 首页之前仍有记录时，在 transcript 顶部显示紧凑的 `Load earlier history` marker，而不是静默截断。激活后以 cursor/line-offset 加载紧邻的更早一页，去重后追加到顶部，并保持用户当前阅读锚点不跳动。
+- `PageUp`/`PageDown` 只移动显示窗口，不删除已加载消息；加载更早页面后保留当前阅读位置，避免回到最新消息。
 - 分页中每次只允许一个 request；重复触发、过期 request、切换 session 或退出 TUI 后返回的结果必须丢弃。分页完成时 marker 变为 `Beginning of session`；空 session 显示明确 empty state。
 - JSONL 读取失败、解析失败、损坏尾行、权限错误或 session 不存在时，保留已有的成功页和 editor，显示可读 error notice；不得清空为新 session、不得使 TUI 崩溃。损坏尾行可忽略并报告已恢复到最后一条合法 entry；中间损坏必须报告 session unreadable 并允许返回 picker。
 - hydration 成功后才提交新的 active `sessionId`；若失败或被取消，应原子恢复此前选择的 session、transcript 和 status，避免 status 与实际 Runner history 不一致。
@@ -338,7 +339,7 @@ Picker 打开时拥有焦点：
 | Key | 行为 |
 |---|---|
 | Up/Down | 移动选中项 |
-| PageUp/PageDown | 第一版可选；若实现则按页移动 |
+| PageUp/PageDown | Transcript 按页向前/向后移动；到达已加载历史边界时 PageUp 加载更早页面 |
 | Enter | 确认选择 |
 | Esc | 取消 picker，返回 editor |
 | Ctrl+C | 取消 picker；若无 picker 且 editor 为空，退出或提示 |

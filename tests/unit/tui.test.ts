@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { applyAgentEvent, editorLinesWithCursor, formatStatusBar, isMarkdownTableSeparator, isMarkdownTableRow, messagePresentation, parseMarkdownTableRow, sessionEntriesToTuiMessages, type TuiMessage } from '../../src/app/tui.js';
+import { applyAgentEvent, editorLinesWithCursor, formatStatusBar, isMarkdownTableSeparator, isMarkdownTableRow, messagePresentation, parseMarkdownTableRow, sessionEntriesToTuiMessages, toggleLastToolDetails, transcriptPageSize, transcriptWindow, type TuiMessage } from '../../src/app/tui.js';
 import { createEditorState } from '../../src/app/editor-state.js';
 import type { SessionEntry } from '../../src/session/session-types.js';
 import type { AgentStreamEvent } from '../../src/agent/types.js';
@@ -40,7 +40,7 @@ describe('TUI event rendering', () => {
 
     expect(withResult).toEqual([
       { role: 'system', text: 'ready' },
-      { role: 'tool', text: 'read secret lines 1–400\nfailed: permission_denied', ok: false, toolCallId: 'call-1' },
+      { role: 'tool', text: 'read secret lines 1–400\nfailed: permission_denied', detail: '', expanded: false, ok: false, toolCallId: 'call-1' },
     ]);
   });
 
@@ -56,7 +56,7 @@ describe('TUI event rendering', () => {
 
     expect(completed).toEqual([
       { role: 'system', text: 'ready' },
-      { role: 'tool', text: 'read a lines 1–1', ok: true, toolCallId: 'call-1' },
+      { role: 'tool', text: 'read a lines 1–1', detail: 'hidden', expanded: false, ok: true, toolCallId: 'call-1' },
     ]);
   });
 
@@ -68,6 +68,26 @@ describe('TUI event rendering', () => {
     expect(text).not.toContain('permission ');
     expect(text).not.toContain('reasoning ');
     expect(text).not.toContain('session ');
+  });
+
+  it('toggles the latest tool details without changing other messages', () => {
+    const messages: TuiMessage[] = [
+      { role: 'assistant', text: 'Inspecting' },
+      { role: 'tool', text: 'read file lines 1–2', detail: 'line 1\nline 2', expanded: false, ok: true, toolCallId: 'call-1' },
+    ];
+
+    const expanded = toggleLastToolDetails(messages);
+    expect(expanded[1]).toMatchObject({ expanded: true });
+    expect(toggleLastToolDetails(expanded)[1]).toMatchObject({ expanded: false });
+    expect(expanded[0]).toBe(messages[0]);
+  });
+
+  it('pages transcript windows without discarding history', () => {
+    const messages = ['m1', 'm2', 'm3', 'm4', 'm5'];
+    expect(transcriptPageSize(10)).toBe(12);
+    expect(transcriptWindow(messages, 2, 0)).toEqual({ start: 3, end: 5, items: ['m4', 'm5'] });
+    expect(transcriptWindow(messages, 2, 2)).toEqual({ start: 1, end: 3, items: ['m2', 'm3'] });
+    expect(transcriptWindow(messages, 2, 99)).toEqual({ start: 0, end: 0, items: [] });
   });
 
   it('lists rename and reload commands', () => {
@@ -106,7 +126,7 @@ describe('TUI event rendering', () => {
     expect(sessionEntriesToTuiMessages(entries)).toEqual([
       { role: 'user', text: 'Fix **this**.' },
       { role: 'assistant', text: 'I will inspect it.' },
-      { role: 'tool', text: 'read_file · completed', ok: true, toolCallId: 'call-1' },
+      { role: 'tool', text: 'read_file · completed', detail: 'contents', expanded: false, ok: true, toolCallId: 'call-1' },
       { role: 'cancelled', text: 'Run interrupted.' },
     ]);
   });

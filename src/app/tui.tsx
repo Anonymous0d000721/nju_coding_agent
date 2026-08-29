@@ -1,12 +1,13 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { stdin as defaultStdin, stdout as defaultStdout } from 'node:process';
-import { Box, Text, render, useApp, useInput } from 'ink';
+import { Box, Text, render, useApp, useInput, useWindowSize } from 'ink';
 import type { AgentRunControl, AgentStreamEvent } from '../agent/types.js';
 import type { ThinkingLevel } from '../model/model-client.js';
 import { clampThinkingLevel } from '../model/thinking.js';
 import { createSessionNameEntry, createThinkingLevelChangeEntry } from '../session/entries.js';
 import { JsonlSessionStore } from '../session/jsonl-store.js';
 import type { AgentConfig } from '../shared/config.js';
+import { redact } from '../shared/redact.js';
 import type { ToolDefinition } from '../tools/types.js';
 import { ProjectTrustStore } from '../shared/trust.js';
 import { renderHelp } from './renderer.js';
@@ -23,7 +24,7 @@ type PickerOption = { label: string; value: string; description?: string; disabl
 type PickerState = { kind: PickerKind; title: string; options: PickerOption[]; index: number };
 export type TuiMessage =
   | { role: 'user' | 'assistant' | 'thinking' | 'system' | 'error' | 'cancelled'; text: string }
-  | { role: 'tool'; text: string; ok?: boolean; toolCallId?: string };
+  | { role: 'tool'; text: string; preview?: string; detail?: string; expanded?: boolean; ok?: boolean; toolCallId?: string };
 
 export const TUI_COMMANDS = [
   { name: '/help', description: 'show help' }, { name: '/session', description: 'show current session' },
@@ -57,6 +58,8 @@ function TuiApp({ config, runPrompt, compactSession, memoryStatus }: TuiOptions)
   const [completionDismissed, setCompletionDismissed] = useState(false);
   const [historyHasMore, setHistoryHasMore] = useState(false);
   const [historyCursor, setHistoryCursor] = useState<string>();
+  const [transcriptOffset, setTranscriptOffset] = useState(0);
+  const { rows: terminalRows } = useWindowSize();
   const controller = useRef<AbortController | undefined>(undefined);
   const hydrationController = useRef<AbortController | undefined>(undefined);
   const approvalResolver = useRef<((allowed: boolean) => void) | undefined>(undefined);
@@ -90,7 +93,7 @@ function TuiApp({ config, runPrompt, compactSession, memoryStatus }: TuiOptions)
   };
   const openPicker = async (kind: PickerKind) => { try { setPicker(await createPicker(kind, config, sessionId, showReasoning)); } catch (error) { appendError(asMessage(error)); } };
   const resumeSession = async (next?: string) => {
-    const previous = { sessionId, sessionLabel, messages, status, historyHasMore, historyCursor };
+    const previous = { sessionId, sessionLabel, messages, status, historyHasMore, historyCursor, transcriptOffset };
     hydrationController.current?.abort();
     if (!next) {
       config.session.id = undefined;
@@ -99,6 +102,7 @@ function TuiApp({ config, runPrompt, compactSession, memoryStatus }: TuiOptions)
       setMessages([{ role: 'system', text: 'Started a new session.' }]);
       setHistoryHasMore(false);
       setHistoryCursor(undefined);
+      setTranscriptOffset(0);
       setStatus('idle');
       return;
     }
@@ -108,6 +112,7 @@ function TuiApp({ config, runPrompt, compactSession, memoryStatus }: TuiOptions)
     setMessages([{ role: 'system', text: 'Loading session history…' }]);
     setHistoryHasMore(false);
     setHistoryCursor(undefined);
+    setTranscriptOffset(0);
     try {
       const page = await new JsonlSessionStore(`${config.workspaceRoot}/.nju-agent`).readDisplayPage(next, { limit: 80 });
       if (signal.signal.aborted) {
@@ -116,6 +121,7 @@ function TuiApp({ config, runPrompt, compactSession, memoryStatus }: TuiOptions)
         setMessages(previous.messages);
         setHistoryHasMore(previous.historyHasMore);
         setHistoryCursor(previous.historyCursor);
+        setTranscriptOffset(previous.transcriptOffset);
         setStatus(previous.status);
         return;
       }
@@ -126,6 +132,7 @@ function TuiApp({ config, runPrompt, compactSession, memoryStatus }: TuiOptions)
       setMessages(restored.length ? restored : [{ role: 'system', text: 'This session has no displayable history.' }]);
       setHistoryHasMore(page.hasMore);
       setHistoryCursor(page.nextBeforeEntryId);
+      setTranscriptOffset(0);
       setStatus('idle');
     } catch (error) {
       if (signal.signal.aborted) {
@@ -134,6 +141,7 @@ function TuiApp({ config, runPrompt, compactSession, memoryStatus }: TuiOptions)
         setMessages(previous.messages);
         setHistoryHasMore(previous.historyHasMore);
         setHistoryCursor(previous.historyCursor);
+        setTranscriptOffset(previous.transcriptOffset);
         setStatus(previous.status);
       } else {
         setSessionId(previous.sessionId);
@@ -141,6 +149,7 @@ function TuiApp({ config, runPrompt, compactSession, memoryStatus }: TuiOptions)
         setMessages([...previous.messages, { role: 'error', text: `Could not load session history: ${asMessage(error)}` }]);
         setHistoryHasMore(previous.historyHasMore);
         setHistoryCursor(previous.historyCursor);
+        setTranscriptOffset(previous.transcriptOffset);
         setStatus(previous.status === 'hydrating' ? 'idle' : previous.status);
       }
     } finally {
@@ -160,6 +169,7 @@ function TuiApp({ config, runPrompt, compactSession, memoryStatus }: TuiOptions)
       }
       const older = sessionEntriesToTuiMessages(page.entries, showReasoning);
       setMessages((items) => [...older, ...items]);
+      setTranscriptOffset((offset) => offset + older.length);
       setHistoryHasMore(page.hasMore);
       setHistoryCursor(page.nextBeforeEntryId);
       setStatus('idle');
@@ -196,7 +206,7 @@ function TuiApp({ config, runPrompt, compactSession, memoryStatus }: TuiOptions)
   const handleSubmit = async () => {
     if (status === 'hydrating' || status === 'running' || status === 'cancelling') return;
     const submitted = submitEditor(editor); if (!submitted.prompt) return;
-    setEditor(submitted.state); const raw = submitted.prompt; const line = raw.trim();
+    setEditor(submitted.state); setTranscriptOffset(0); const raw = submitted.prompt; const line = raw.trim();
     if (line.startsWith('/')) { await handleCommand(line, { app, config, sessionId, setSessionId, setSessionLabel, showReasoning, setShowReasoning, openPicker, appendSystem, appendError, persistEffort, setModel, resumeSession, compactSession, memoryStatus, markPluginsForReload }); return; }
     append({ role: 'user', text: raw }); setStatus('running'); const signal = new AbortController(); controller.current = signal;
     try {
@@ -234,8 +244,16 @@ function TuiApp({ config, runPrompt, compactSession, memoryStatus }: TuiOptions)
     }
     if (status === 'hydrating') { if (key.escape) hydrationController.current?.abort(); return; }
     if (key.escape) { if (completion.length) { setCompletionDismissed(true); return; } cancelRun(); return; }
+    if (key.ctrl && value === 'o') { setMessages((items) => toggleLastToolDetails(items)); return; }
     if (key.ctrl && value === 'c') { if (status === 'running' || status === 'cancelling') { cancelRun(); return; } if (editor.text) updateEditor((state) => ({ ...state, text: '', cursorOffset: 0 })); else app.exit(); return; }
-    if (key.pageUp && historyHasMore) { void loadEarlierHistory(); return; }
+    if (key.pageUp) {
+      const pageSize = transcriptPageSize(terminalRows);
+      if (transcriptOffset < Math.max(0, messages.length - pageSize)) {
+        setTranscriptOffset((offset) => Math.min(Math.max(0, messages.length - pageSize), offset + pageSize));
+      } else if (historyHasMore) void loadEarlierHistory();
+      return;
+    }
+    if (key.pageDown) { setTranscriptOffset((offset) => Math.max(0, offset - transcriptPageSize(terminalRows))); return; }
     if (status === 'running') { if (key.ctrl && key.return) submitWhileRunning('steer'); else if (key.return) submitWhileRunning('queue'); return; }
     if (status === 'cancelling') return;
     if ((key.shift && key.return) || (key.ctrl && value === 'j')) { updateEditor((state) => insertText(state, '\n')); return; }
@@ -265,13 +283,28 @@ function TuiApp({ config, runPrompt, compactSession, memoryStatus }: TuiOptions)
 
   return <Box flexDirection="column">
     <Text color="gray" dimColor>nju-agent · {config.workspaceRoot}</Text>
-    <Box flexDirection="column" flexGrow={1} marginBottom={1}>
-      {historyHasMore ? <Text color="gray">↑ Earlier history available · PageUp to load</Text> : null}
-      {messages.map((message, index) => <MessageLine key={`${message.role}-${index}`} message={message} />)}
-    </Box>
+    <TranscriptView messages={messages} terminalRows={terminalRows} offset={transcriptOffset} historyHasMore={historyHasMore} />
     <EditorView editor={editor} busy={busy} />
     {approval ? <ApprovalView tool={approval} /> : picker ? <PickerView picker={picker} /> : completion.length ? <CompletionView items={completion} selectedIndex={completionIndex} /> : null}
     <Text color={statusColor} wrap="truncate">{statusText}</Text>
+  </Box>;
+}
+
+const TRANSCRIPT_PAGE_LINES = 12;
+export function transcriptPageSize(terminalRows: number): number { return Math.max(TRANSCRIPT_PAGE_LINES, Math.floor(terminalRows * 0.6)); }
+export function transcriptWindow<T>(items: T[], pageSize: number, offset: number): { start: number; end: number; items: T[] } {
+  const end = Math.max(0, items.length - Math.max(0, offset));
+  const start = Math.max(0, end - Math.max(1, pageSize));
+  return { start, end, items: items.slice(start, end) };
+}
+function TranscriptView({ messages, terminalRows, offset, historyHasMore }: { messages: TuiMessage[]; terminalRows: number; offset: number; historyHasMore: boolean }) {
+  const pageSize = transcriptPageSize(terminalRows);
+  const window = transcriptWindow(messages, pageSize, offset);
+  const { start, end, items: visible } = window;
+  return <Box flexDirection="column" flexGrow={1} marginBottom={1}>
+    {start > 0 || historyHasMore ? <Text color="gray">↑ Earlier history · PageUp</Text> : null}
+    {offset > 0 ? <Text color="gray">↓ Newer messages · PageDown</Text> : null}
+    {visible.map((message, index) => <MessageLine key={`${start + index}-${message.role}`} message={message} />)}
   </Box>;
 }
 
@@ -303,7 +336,7 @@ function CompletionView({ items, selectedIndex }: { items: readonly { name: stri
   return <Box flexDirection="column"><Text color="cyan">commands · ↑/↓ choose · Tab/Enter accept · Esc cancel</Text>{items.map((item, index) => <Box key={item.name} width="100%" backgroundColor={index === selectedIndex ? 'gray' : undefined}><Text color={index === selectedIndex ? 'white' : 'gray'}>{index === selectedIndex ? '› ' : '  '}{item.name} — {item.description}</Text></Box>)}</Box>;
 }
 function ApprovalView({ tool }: { tool: ToolDefinition }) {
-  return <Box flexDirection="column"><Text color="yellow">Permission required: {tool.name} ({tool.risk})</Text><Text color="gray">Press Enter/y to allow, n/Esc to deny</Text></Box>;
+  return <Box flexDirection="column"><Text color="yellow">Allow {tool.name} · {tool.risk}</Text><Text color="gray">{tool.description}</Text><Text color="gray">Enter/y allow · n/Esc deny</Text></Box>;
 }
 function PickerView({ picker }: { picker: PickerState }) {
   return <Box flexDirection="column"><Text color="cyan">{picker.title} (↑/↓ choose · Enter select · Esc cancel)</Text>{picker.options.map((option, index) => <Box key={`${option.value}-${index}`} width="100%" backgroundColor={!option.disabled && index === picker.index ? 'gray' : undefined}><Text color={option.disabled ? 'gray' : index === picker.index ? 'white' : 'white'}>{index === picker.index ? '› ' : '  '}{option.label}</Text>{option.description ? <Text color="gray"> — {option.description}</Text> : null}</Box>)}</Box>;
@@ -320,7 +353,8 @@ export function messagePresentation(message: TuiMessage): MessagePresentation {
 }
 function MessageLine({ message }: { message: TuiMessage }) {
   const presentation = messagePresentation(message);
-  return <Box marginBottom={1}><Text color={presentation.color} dimColor={presentation.dim}>{presentation.marker}</Text><MarkdownView text={message.text} color={presentation.color} dim={presentation.dim} /></Box>;
+  const text = message.role === 'tool' && message.expanded && message.detail ? `${message.text}\n${message.detail}` : message.text;
+  return <Box marginBottom={1}><Text color={presentation.color} dimColor={presentation.dim}>{presentation.marker}</Text><MarkdownView text={text} color={presentation.color} dim={presentation.dim} /></Box>;
 }
 function MarkdownView({ text, color, dim = false }: { text: string; color: MessagePresentation['color']; dim?: boolean }) {
   let code = false;
@@ -372,7 +406,7 @@ export function sessionEntriesToTuiMessages(entries: SessionEntry[], showReasoni
         const name = toolNames.get(message.toolCallId ?? '') ?? 'tool';
         const failed = /failed|error|denied/i.test(message.content);
         const index = messages.findIndex((item) => item.role === 'tool' && item.toolCallId === message.toolCallId);
-        const card: TuiMessage = { role: 'tool', text: message.preview ?? `${name} · ${failed ? 'failed' : 'completed'}`, ok: !failed, toolCallId: message.toolCallId };
+        const card: TuiMessage = { role: 'tool', text: message.preview ?? `${name} · ${failed ? 'failed' : 'completed'}`, detail: message.content, expanded: false, ok: !failed, toolCallId: message.toolCallId };
         if (index >= 0) messages[index] = card; else messages.push(card);
       }
     } else if (entry.type === 'run_end' && entry.stopReason === 'user_cancelled') messages.push({ role: 'cancelled', text: 'Run interrupted.' });
@@ -385,10 +419,20 @@ export function applyAgentEvent(messages: TuiMessage[], event: AgentStreamEvent,
   if (event.type === 'text_delta') return appendToLast(messages, 'assistant', event.delta);
   if (event.type === 'thinking_delta') return showReasoning && event.delta ? appendToLast(messages, 'thinking', event.delta) : messages;
   if (event.type === 'tool_call') return [...messages, { role: 'tool', text: event.preview ?? event.toolCall.preview ?? `${event.toolCall.name} · running`, toolCallId: event.toolCall.id }];
-  if (event.type === 'tool_result') { const status = event.result.ok ? 'completed' : `failed:${event.result.error?.code ?? 'error'}`; const text = event.result.preview ?? `${event.result.toolName} · ${status}`; let index = -1; for (let i = messages.length - 1; i >= 0; i -= 1) { const item = messages[i]; if (item?.role === 'tool' && item.toolCallId === event.result.toolCallId) { index = i; break; } } if (index >= 0) return [...messages.slice(0, index), { role: 'tool', text, ok: event.result.ok, toolCallId: event.result.toolCallId }, ...messages.slice(index + 1)]; return [...messages, { role: 'tool', text, ok: event.result.ok, toolCallId: event.result.toolCallId }]; }
+  if (event.type === 'tool_result') { const status = event.result.ok ? 'completed' : `failed:${event.result.error?.code ?? 'error'}`; const text = event.result.preview ?? `${event.result.toolName} · ${status}`; let index = -1; for (let i = messages.length - 1; i >= 0; i -= 1) { const item = messages[i]; if (item?.role === 'tool' && item.toolCallId === event.result.toolCallId) { index = i; break; } } const replacement = { role: 'tool' as const, text, detail: toolDetail(event.result.content), expanded: false, ok: event.result.ok, toolCallId: event.result.toolCallId }; if (index >= 0) return [...messages.slice(0, index), replacement, ...messages.slice(index + 1)]; return [...messages, replacement]; }
   return messages;
 }
+
+export function toggleLastToolDetails(messages: TuiMessage[]): TuiMessage[] {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message?.role === 'tool' && message.detail) return [...messages.slice(0, index), { ...message, expanded: !message.expanded }, ...messages.slice(index + 1)];
+  }
+  return messages;
+}
+
 function appendToLast(messages: TuiMessage[], role: 'assistant' | 'thinking', delta: string): TuiMessage[] { const last = messages.at(-1); return last?.role === role ? [...messages.slice(0, -1), { role, text: `${last.text}${delta}` }] : [...messages, { role, text: delta }]; }
+function toolDetail(content: string): string { const redacted = redact(content); const lines = redacted.split(/\r?\n/); return lines.length > 120 ? `${lines.slice(0, 120).join('\n')}\n…` : redacted; }
 interface CommandContext { app: ReturnType<typeof useApp>; config: AgentConfig; sessionId?: string; setSessionId: (value: string | undefined) => void; setSessionLabel: (value: string | undefined) => void; showReasoning: boolean; markPluginsForReload: () => void; setShowReasoning: (value: boolean) => void; openPicker: (kind: PickerKind) => Promise<void>; appendSystem: (text: string) => void; appendError: (text: string) => void; persistEffort: (level: ThinkingLevel, targetSessionId?: string) => Promise<void>; setModel: (model: string) => void; resumeSession: (sessionId?: string) => Promise<void>; compactSession: typeof compactSession; memoryStatus: typeof memoryStatus; }
 async function handleCommand(line: string, ctx: CommandContext): Promise<void> {
   if (line === '/quit' || line === '/exit') { ctx.app.exit(); return; } if (line === '/help') { ctx.appendSystem(renderHelp().trim()); return; } if (line === '/new') { ctx.setSessionId(undefined); ctx.setSessionLabel(undefined); ctx.appendSystem('Started a new session.'); return; }
