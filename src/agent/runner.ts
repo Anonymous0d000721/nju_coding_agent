@@ -19,7 +19,7 @@ export class AgentRunner {
   constructor(private readonly deps: AgentRunnerDeps) {}
 
   async run(userPrompt: string, options: AgentRunOptions, signal?: AbortSignal): Promise<AgentRunResult> {
-    const messages: AgentMessage[] = [...(options.initialMessages ?? []), { role: 'user', content: userPrompt }];
+    const messages: AgentMessage[] = [...(options.initialMessages ?? []), { role: 'user', content: userPrompt, sessionEntryId: options.userMessageEntryId }];
     const stop = async (result: AgentRunResult): Promise<AgentRunResult> => {
       await this.deps.hooks?.run('onStop', { userPrompt, turn: result.turns, signal, result });
       return result;
@@ -31,8 +31,17 @@ export class AgentRunner {
 
     for (let turn = 0; turn < options.maxTurns; turn += 1) {
       if (signal?.aborted) return stop({ stopReason: 'user_cancelled', messages, turns: turn, toolCalls });
-      const compacted = compactMessages(messages, options.maxContextChars ?? 100_000);
-      if (compacted.compacted) await options.onCompaction?.(compacted.summary, compacted.omittedMessages);
+      const compacted = (options.compactor ?? compactMessages)(messages, options.maxContextChars ?? 100_000);
+      if (compacted.compacted) {
+        messages.splice(0, messages.length, ...compacted.messages);
+        await options.onCompaction?.({
+          summary: compacted.summary,
+          omittedMessages: compacted.omittedMessages,
+          coveredEntryIds: compacted.coveredEntryIds,
+          firstKeptEntryId: compacted.firstKeptEntryId,
+          stats: compacted.stats,
+        });
+      }
       const request = {
         systemPrompt: this.deps.systemPrompt,
         messages: compacted.messages,

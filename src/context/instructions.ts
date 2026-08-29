@@ -10,6 +10,7 @@ export interface ProjectInstruction {
 const INSTRUCTION_NAMES = ['AGENTS.md', 'CLAUDE.md', 'instructions.md'];
 
 export function loadProjectInstructions(workspaceRoot: string, trusted = false): ProjectInstruction[] {
+  if (!trusted) return [];
   const result: ProjectInstruction[] = [];
   let current = path.resolve(workspaceRoot);
   while (true) {

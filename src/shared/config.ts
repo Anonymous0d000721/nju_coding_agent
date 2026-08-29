@@ -13,6 +13,7 @@ export interface AgentConfig {
   projectTrusted: boolean;
   model: { apiKey?: string; baseUrl: string; model: string; apiFormat: ApiFormat; thinking: ThinkingConfig };
   session: { enabled: boolean; id?: string };
+  memory: { enabled: boolean; rootDir?: string };
   mcpServers: Array<{ name: string; command: string; args?: string[]; cwd?: string; env?: Record<string, string> }>;
 }
 
@@ -37,8 +38,16 @@ export function loadConfig(input: { env: NodeJS.ProcessEnv; args: CliArgs; cwd: 
       thinking: { level: clampThinkingLevel(requestedLevel, thinkingMap), map: thinkingMap, format: parseThinkingFormat(envValue('NJU_AGENT_THINKING_FORMAT')), budgets: parseThinkingBudgets(envValue('NJU_AGENT_THINKING_BUDGETS')) },
     },
     session: { enabled: !input.args.noSession, id: input.args.session },
+    memory: { enabled: parseBoolean(envValue('NJU_AGENT_MEMORY_ENABLED'), true), rootDir: envValue('NJU_AGENT_MEMORY_DIR') },
     mcpServers: parseMcpServers(envValue('NJU_AGENT_MCP_SERVERS')),
   };
+}
+
+function parseBoolean(value: string | undefined, fallback: boolean): boolean {
+  if (value === undefined) return fallback;
+  if (value === 'true' || value === '1') return true;
+  if (value === 'false' || value === '0') return false;
+  throw new Error(`Invalid boolean value: ${value}`);
 }
 
 function parseMcpServers(value: string | undefined): AgentConfig['mcpServers'] {

@@ -1,6 +1,7 @@
 import type { ToolResult } from '../tools/types.js';
 import type { ThinkingConfig } from '../model/model-client.js';
 import type { ModelStreamEvent } from '../model/streaming.js';
+import type { CompactionResult } from '../context/compactor.js';
 
 export type AgentStreamEvent =
   | ModelStreamEvent
@@ -14,6 +15,7 @@ export interface AgentMessage {
   content: string;
   toolCalls?: ToolCall[];
   toolCallId?: string;
+  sessionEntryId?: string;
 }
 
 export interface ToolCall { id: string; name: string; argumentsJson: string; }
@@ -34,11 +36,13 @@ export interface AgentRunOptions {
   maxTurns: number;
   maxToolCalls: number;
   maxContextChars?: number;
+  compactor?: (messages: AgentMessage[], maxChars: number, keepMessages?: number) => CompactionResult;
   initialMessages?: AgentMessage[];
   persistUserMessage?: boolean;
+  userMessageEntryId?: string;
   thinking?: ThinkingConfig;
   onStreamEvent?: (event: AgentStreamEvent) => void | Promise<void>;
-  onCompaction?: (summary: string, omittedMessages: number) => void | Promise<void>;
+  onCompaction?: (compaction: { summary: string; omittedMessages: number; coveredEntryIds: string[]; firstKeptEntryId?: string; stats: { sourceChars: number; outputChars: number; omittedToolOutputChars: number } }) => void | Promise<void>;
   goalGate?: boolean;
 }
 
