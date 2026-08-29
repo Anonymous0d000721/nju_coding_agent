@@ -109,7 +109,7 @@ interface AssistantTurn {
 5. 工具执行错误是 observation，要返回给模型。
 6. assistant message 必须在执行其 tool calls 前持久化。
 7. tool result 必须尽快持久化，不得等整个 run 成功后再写。
-8. loop 必须有限：最大轮数、每轮最大 tool calls、总 tool calls、最大耗时、取消信号。
+8. loop 不设置固定 turn 或 tool-call 数量上限；正式运行依靠模型自然完成、取消信号、模型/runtime 错误和可选的外部 token/cost/time 预算结束。长上下文应先通过本地 deterministic compaction 压缩后继续。
 
 ## 7. 批量 Tool Calls
 
@@ -129,8 +129,6 @@ interface AssistantTurn {
 | `completed` | assistant 给出最终答复，且必要验证已满足。 |
 | `model_finished` | 模型无 tool call 停止，但没有明确验证规则。 |
 | `user_cancelled` | 用户取消。 |
-| `max_turns` | 超过最大轮数。 |
-| `max_tool_calls` | 超过工具调用预算。 |
 | `budget_exhausted` | token/cost/time 预算耗尽。 |
 | `context_overflow` | 上下文过长，压缩/重试无法恢复。 |
 | `fatal_error` | 不可恢复的模型、runtime 或 session 错误。 |
@@ -160,6 +158,5 @@ interface AssistantTurn {
 - 一次 tool call 后能回到模型继续；
 - 多个 tool calls 都有配对结果；
 - 未知工具、非法参数、handler 抛错、超时、取消都产生 tool result；
-- max turns / max tool calls 能停止 run；
 - assistant/tool 消息顺序满足 API 协议；
 - session 中存在 user、assistant、tool result、run end 等 append-only 记录。

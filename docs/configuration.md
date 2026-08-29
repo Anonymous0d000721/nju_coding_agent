@@ -20,6 +20,10 @@ NJU_AGENT_THINKING_LEVEL
 
 `permissionMode` 支持 `yolo`、`strict`、`confirm`，默认是 `yolo`。`yolo` 不是沙箱。项目 Trust 决定是否加载工作区内的指令、技能、插件和 MCP 配置；可用 `--approve` 或 `--no-approve` 覆盖本次运行。
 
+## Agent 运行预算
+
+Agent 不设置固定轮数或工具调用数量上限，会在模型完成、取消或错误时结束；上下文过长时由本地 deterministic compaction 压缩后继续运行。长时间运行应由用户取消或外部运行时预算控制。
+
 ## 会话、记忆与记录
 
 - `NJU_AGENT_MEMORY_ENABLED`：是否启用本地 Markdown Memory，默认启用。

@@ -179,7 +179,7 @@
 - 所有写入类工具先经过路径解析和权限策略；模型提供的路径永远不直接信任。
 - 所有 shell 执行都有工作目录、超时、取消信号、输出上限与退出码。
 - 工具失败是返回给模型的结构化 observation，不是让进程崩溃。
-- 每一轮都有最大工具调用数，整个 run 有最大轮数、最大持续时间和 token/cost 预算。
+- Agent loop 不设置固定轮数或工具调用数量上限；取消、最大持续时间和可选 token/cost 预算由运行时负责。
 - 每个 session 的历史是 append-only；摘要是新条目，不修改旧对话。
 - 动态数据（时间、临时状态）不破坏稳定 system prefix；避免缓存失效。
 - 未经用户确认的高风险操作不执行；后台/子 agent 不得争抢前台审批输入。
@@ -478,8 +478,8 @@ nju-coding-agent/
 1. 实现 `todo_write` / `todo_list`：任务项结构化持久化，支持 pending/in_progress/completed/blocked；Agent 修改完整清单前做 schema 和状态迁移校验。
 2. 引入轻量 Plan Mode：复杂任务（或用户 `/plan`）先产出计划，再请求用户批准/进入实施；简单任务不强制。
 3. 自动收集 coding evidence：修改过的文件、最近命令及 exit code、git diff、测试/lint 结果。
-4. 设定 run guardrails：max turns、max tool calls/turn、max wall time、max failures per tool、最大输出、可选 token/cost budget。
-5. 实现停止原因：`completed`、`model_finished`、`user_cancelled`、`max_turns`、`budget_exhausted`、`fatal_error`。
+4. 设定运行时安全边界：取消信号、max wall time、max failures per tool、最大输出和可选 token/cost budget；不设置固定 turn 或 tool-call 数量上限。
+5. 实现停止原因：`completed`、`model_finished`、`user_cancelled`、`budget_exhausted`、`fatal_error`。
 6. 可选 `GoalGate`：对于明确目标（如 `npm test` exit 0），模型停止后根据最近可验证 evidence 判断是否缺少验证；缺失时反馈给主 loop 继续。第一版尽可能以**确定性验证命令**为依据，避免完全依赖第二个 LLM evaluator。
 7. 生成脱敏 JSONL telemetry / run report。
 
