@@ -31,15 +31,16 @@ describe('TUI event rendering', () => {
     const withCall = applyAgentEvent(base, {
       type: 'tool_call',
       toolCall: { id: 'call-1', name: 'read_file', argumentsJson: '{"path":"secret"}' },
+      preview: 'read secret lines 1–400',
     }, false);
     const withResult = applyAgentEvent(withCall, {
       type: 'tool_result',
-      result: { toolCallId: 'call-1', toolName: 'read_file', ok: false, content: '', error: { code: 'permission_denied', message: 'denied', recoverable: true }, elapsedMs: 1 },
+      result: { toolCallId: 'call-1', toolName: 'read_file', ok: false, content: '', preview: 'read secret lines 1–400\nfailed: permission_denied', error: { code: 'permission_denied', message: 'denied', recoverable: true }, elapsedMs: 1 },
     }, false);
 
     expect(withResult).toEqual([
       { role: 'system', text: 'ready' },
-      { role: 'tool', text: 'read_file · failed:permission_denied', ok: false, toolCallId: 'call-1' },
+      { role: 'tool', text: 'read secret lines 1–400\nfailed: permission_denied', ok: false, toolCallId: 'call-1' },
     ]);
   });
 
@@ -50,12 +51,12 @@ describe('TUI event rendering', () => {
     }, false);
     const completed = applyAgentEvent(withCall, {
       type: 'tool_result',
-      result: { toolCallId: 'call-1', toolName: 'read_file', ok: true, content: 'hidden', elapsedMs: 1 },
+      result: { toolCallId: 'call-1', toolName: 'read_file', ok: true, content: 'hidden', preview: 'read a lines 1–1', elapsedMs: 1 },
     }, false);
 
     expect(completed).toEqual([
       { role: 'system', text: 'ready' },
-      { role: 'tool', text: 'read_file · completed', ok: true, toolCallId: 'call-1' },
+      { role: 'tool', text: 'read a lines 1–1', ok: true, toolCallId: 'call-1' },
     ]);
   });
 

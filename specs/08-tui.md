@@ -96,6 +96,10 @@ TUI 可以持有界面状态，但不得持有或复制 agent loop 状态。所�
 
 ## 6. UI 布局
 
+### 工具活动预览
+
+TUI 必须渲染工具事件携带的 `preview`，不得重新解析原始工具参数或读取文件来拼装展示内容。默认预览上限为 8 行，可由 `NJU_AGENT_TOOL_PREVIEW_LINES` 配置（1–100）。`read_file` 展示路径和实际读取行范围；`write_file` 展示写入内容头部；`hashline_edit` 展示 unified diff；`run_command` 展示完整命令和输出头部；其他工具展示脱敏后的关键参数与结果摘要。超长单行应截断，敏感字段必须脱敏。
+
 第一版采用 regular mode，不要求 fullscreen/alternate screen；若 Ink 默认使用差分渲染即可，不自行实现 ANSI diff。
 
 布局的核心是连续阅读与直接输入，而不是堆叠多个带框 panel。除可选 Header 外，主区域从上到下必须严格为：

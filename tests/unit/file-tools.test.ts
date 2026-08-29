@@ -19,6 +19,8 @@ describe('file tools', () => {
 
     const [write] = await executor.executeBatch([{ id: 'w1', name: 'write_file', argumentsJson: '{"path":"src/demo.txt","content":"alpha\\nbeta","createDirectories":true}' }]);
     expect(write.ok).toBe(true);
+    expect(write.preview).toContain('write src/demo.txt');
+    expect(write.preview).toContain('alpha');
 
     const [list] = await executor.executeBatch([{ id: 'l1', name: 'list_files', argumentsJson: '{"path":".","depth":2}' }]);
     expect(list.content).toContain('src/demo.txt');
@@ -46,6 +48,9 @@ describe('file tools', () => {
 
     const [edit] = await executor.executeBatch([{ id: 'e1', name: 'hashline_edit', argumentsJson: JSON.stringify({ path: 'demo.txt', edits: [{ op: 'replace', start: `${anchor}:`, content: 'TWO' }] }) }]);
     expect(edit.ok).toBe(true);
+    expect(edit.preview).toContain('edit demo.txt');
+    expect(edit.preview).toContain('- two');
+    expect(edit.preview).toContain('+ TWO');
     expect(edit.details).toMatchObject({ editsApplied: 1, newlineStyle: 'LF' });
     expect(JSON.stringify(edit.details)).toMatch(/2#[a-f0-9]{6}/);
 
