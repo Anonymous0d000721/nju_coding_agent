@@ -32,6 +32,13 @@ export interface AssistantTurn {
 
 export type StopReason = 'completed' | 'model_finished' | 'user_cancelled' | 'max_turns' | 'max_tool_calls' | 'budget_exhausted' | 'context_overflow' | 'fatal_error';
 
+export interface AgentRunControl {
+  queue(message: string): void;
+  steer(message: string): void;
+  drainQueue(): string[];
+  drainSteers(): string[];
+}
+
 export interface AgentRunOptions {
   maxTurns: number;
   maxToolCalls: number;
@@ -44,6 +51,7 @@ export interface AgentRunOptions {
   onStreamEvent?: (event: AgentStreamEvent) => void | Promise<void>;
   onCompaction?: (compaction: { summary: string; omittedMessages: number; coveredEntryIds: string[]; firstKeptEntryId?: string; stats: { sourceChars: number; outputChars: number; omittedToolOutputChars: number } }) => void | Promise<void>;
   goalGate?: boolean;
+  control?: AgentRunControl;
 }
 
 export interface AgentRunResult { stopReason: StopReason; messages: AgentMessage[]; turns: number; toolCalls: number; }

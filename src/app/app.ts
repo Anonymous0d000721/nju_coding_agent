@@ -29,7 +29,9 @@ import { createRunReport, writeRunReport } from '../telemetry/report.js';
 import { McpManager } from '../mcp/client.js';
 import { createStdioTransport } from '../mcp/stdio.js';
 import { registerMcpTools } from '../mcp/registry-adapter.js';
-import type { AgentMessage, AgentRunResult, AgentStreamEvent } from '../agent/types.js';
+import { loadUserPlugins, pluginTools } from '../plugins/loader.js';
+import type { AgentMessage, AgentRunControl, AgentRunResult, AgentStreamEvent } from '../agent/types.js';
+import type { ToolDefinition } from '../tools/types.js';
 import type { ThinkingLevel } from '../model/model-client.js';
 import { clampThinkingLevel } from '../model/thinking.js';
 import type { AgentConfig } from '../shared/config.js';
@@ -63,7 +65,7 @@ export function createApp(services: AppServices) {
   };
 }
 
-export async function runPrompt(config: AgentConfig, prompt: string, sessionId?: string, mode: 'text' | 'json' = 'text', thinking = config.model.thinking, streamOutput?: NodeJS.WritableStream, showThinking = false, onAgentEvent?: (event: AgentStreamEvent) => void | Promise<void>, signal?: AbortSignal): Promise<AppResult> {
+export async function runPrompt(config: AgentConfig, prompt: string, sessionId?: string, mode: 'text' | 'json' = 'text', thinking = config.model.thinking, streamOutput?: NodeJS.WritableStream, showThinking = false, onAgentEvent?: (event: AgentStreamEvent) => void | Promise<void>, signal?: AbortSignal, approveTool?: (tool: ToolDefinition) => Promise<boolean>, reloadPlugins = false, control?: AgentRunControl): Promise<AppResult> {
   if (!config.model.apiKey) return missingAuth(mode);
   const registry = new ToolRegistry();
   for (const tool of createFileTools()) registry.register(tool);
@@ -71,6 +73,8 @@ export async function runPrompt(config: AgentConfig, prompt: string, sessionId?:
   for (const tool of createGitTools()) registry.register(tool);
   for (const tool of createBackgroundTools(getBackgroundCommandManager(config.workspaceRoot))) registry.register(tool);
   for (const tool of createTodoTools(`${config.workspaceRoot}/.nju-agent/todo.json`)) registry.register(tool);
+  const userPlugins = await loadUserPlugins(config.workspaceRoot, config.projectTrusted, reloadPlugins);
+  for (const tool of pluginTools(userPlugins)) registry.register(tool);
   const mcp = new McpManager();
   try {
     for (const server of config.mcpServers) {
@@ -128,7 +132,7 @@ export async function runPrompt(config: AgentConfig, prompt: string, sessionId?:
   for (const diagnostic of contextDiagnostics) await telemetry.append({ type: 'harness_error', sessionId: session?.id, runId, data: { ...diagnostic } });
   const runner = new AgentRunner({
     model: createModelClient({ apiFormat: config.model.apiFormat, apiKey: config.model.apiKey, baseUrl: config.model.baseUrl, model: config.model.model }),
-    tools: new ToolExecutor(registry, { workspaceRoot: config.workspaceRoot, permissionMode: config.permissionMode }),
+    tools: new ToolExecutor(registry, { workspaceRoot: config.workspaceRoot, permissionMode: config.permissionMode, approve: approveTool }),
     systemPrompt: buildSystemPrompt(config.workspaceRoot, { pluginContext: renderContributions(contributions) }),
     toolDefinitions: registry.definitionsForModel(),
     hooks,
@@ -141,6 +145,7 @@ export async function runPrompt(config: AgentConfig, prompt: string, sessionId?:
   try {
     let streamedText = false;
     const result = await runner.run(effectivePrompt, { maxTurns: 8, maxToolCalls: 24, maxContextChars: 100_000, compactor: compactor.compact.bind(compactor), initialMessages: previousMessages, persistUserMessage: false, userMessageEntryId: userEntry?.id, thinking, goalGate: true,
+      control,
       onStreamEvent: mode === 'text' && (streamOutput || onAgentEvent) ? async (event) => {
         await onAgentEvent?.(event);
         if (event.type === 'text_delta') streamedText = true;

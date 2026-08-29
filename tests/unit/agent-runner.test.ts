@@ -86,6 +86,16 @@ describe('AgentRunner', () => {
     expect(result.error?.code).toBe('permission_denied');
   });
 
+  it('routes confirm-mode writes through the approval callback', async () => {
+    const registry = new ToolRegistry();
+    registry.register({ name: 'write_test', description: 'test', parameters: { type: 'object' }, risk: 'write', readonly: false, handler: () => 'approved' });
+    const requested: string[] = [];
+    const executor = new ToolExecutor(registry, { workspaceRoot: process.cwd(), permissionMode: 'confirm', approve: async (tool) => { requested.push(tool.name); return true; } });
+    const [result] = await executor.executeBatch([{ id: 'p2', name: 'write_test', argumentsJson: '{}' }]);
+    expect(result.ok).toBe(true);
+    expect(requested).toEqual(['write_test']);
+  });
+
   it('bounds oversized tool observations', async () => {
     const registry = new ToolRegistry();
     registry.register({ name: 'large_result', description: 'test', parameters: { type: 'object' }, risk: 'read', readonly: true, handler: () => 'x'.repeat(20_000) });
@@ -129,6 +139,32 @@ describe('AgentRunner', () => {
       onCompaction: (compaction) => { compactions.push(compaction.omittedMessages); },
     });
     expect(compactions[0]).toBeGreaterThan(0);
+  });
+
+  it('delivers steering messages before the next model request and queued messages after an answer', async () => {
+    const requests: ModelRequest[] = [];
+    const queue: string[] = ['follow-up'];
+    const steer: string[] = [];
+    const control = {
+      queue: (message: string) => queue.push(message),
+      steer: (message: string) => steer.push(message),
+      drainQueue: () => queue.splice(0),
+      drainSteers: () => steer.splice(0),
+    };
+    const model = new FakeModel([assistant({ text: 'first' }), assistant({ text: 'second' })], requests);
+    const originalComplete = model.complete.bind(model);
+    model.complete = async (request) => {
+      const response = await originalComplete(request);
+      if (requests.length === 1) steer.push('change direction');
+      return response;
+    };
+    const runner = createRunner(model);
+    const result = await runner.run('initial', { maxTurns: 2, maxToolCalls: 1, control });
+
+    expect(result.stopReason).toBe('model_finished');
+    expect(requests).toHaveLength(2);
+    expect(requests[0]?.messages.at(-1)?.content).toBe('initial');
+    expect(requests[1]?.messages.map((message) => message.content)).toEqual(['initial', 'first', '[Steering message]\nchange direction', '[Queued message]\nfollow-up']);
   });
 
   it('uses the compacted projection for the model request', async () => {
