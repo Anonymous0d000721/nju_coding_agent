@@ -18,8 +18,8 @@ export function createSessionNameEntry(sessionId: string, name: string): Session
   return { type: 'session_name', id: randomUUID(), sessionId, timestamp: new Date().toISOString(), schemaVersion: 1, name };
 }
 
-export function createSummaryEntry(sessionId: string, summary: string, coveredEntryIds: string[] = [], reason: SummaryEntry['reason'] = 'threshold'): SummaryEntry {
-  return { type: 'summary', id: randomUUID(), sessionId, timestamp: new Date().toISOString(), schemaVersion: 1, summary, coveredEntryIds, reason };
+export function createSummaryEntry(sessionId: string, summary: string, coveredEntryIds: string[] = [], reason: SummaryEntry['reason'] = 'threshold', details: Pick<SummaryEntry, 'algorithm' | 'firstKeptEntryId' | 'stats' | 'supersedesEntryIds'> = {}): SummaryEntry {
+  return { type: 'summary', id: randomUUID(), sessionId, timestamp: new Date().toISOString(), schemaVersion: 1, summary, coveredEntryIds, reason, ...details };
 }
 
 export function createRunEndEntry(sessionId: string, result: AgentRunResult): RunEndEntry {

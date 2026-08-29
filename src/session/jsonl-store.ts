@@ -58,7 +58,12 @@ export class JsonlSessionStore {
     const child = await this.create({ cwd: start.cwd, model: start.model, appVersion: start.appVersion, parentSessionId: parent.id, name: start.name ? `${start.name} fork` : undefined });
     for (const entry of parent.entries.slice(1, boundary)) {
       if (entry.type === 'message') await this.append(child.id, createMessageEntry(child.id, entry.message));
-      if (entry.type === 'summary') await this.append(child.id, createSummaryEntry(child.id, entry.summary, [], entry.reason));
+      if (entry.type === 'summary') await this.append(child.id, createSummaryEntry(child.id, entry.summary, entry.coveredEntryIds, entry.reason, {
+        algorithm: entry.algorithm,
+        firstKeptEntryId: entry.firstKeptEntryId,
+        stats: entry.stats,
+        supersedesEntryIds: entry.supersedesEntryIds,
+      }));
     }
     return this.open(child.id);
   }

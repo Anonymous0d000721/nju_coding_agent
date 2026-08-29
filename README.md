@@ -12,7 +12,7 @@ Copy-Item .env.example .env
 npm run dev -- --print "检查当前项目并运行测试"
 ```
 
-在 `.env` 填写 `NJU_AGENT_API_KEY`、`NJU_AGENT_BASE_URL`、`NJU_AGENT_MODEL`，可用 `NJU_AGENT_API_FORMAT` 选择 `openai-chat`、`openai-responses` 或 `anthropic`。`--json` 输出机器可读结果，`--no-session` 不保存会话。
+在 `.env` 填写 `NJU_AGENT_API_KEY`、`NJU_AGENT_BASE_URL`、`NJU_AGENT_MODEL`，可用 `NJU_AGENT_API_FORMAT` 选择 `openai-chat`、`openai-responses` 或 `anthropic`。`--json` 输出机器可读结果，`--no-session` 不保存会话。默认启用本地 Markdown Memory 和 deterministic compaction；可用 `NJU_AGENT_MEMORY_ENABLED=false` 关闭，或用 `NJU_AGENT_MEMORY_DIR` 指定本地记忆目录。
 
 不带 prompt 进入 Ink TUI：
 
@@ -20,7 +20,7 @@ npm run dev -- --print "检查当前项目并运行测试"
 npm run dev
 ```
 
-TUI 支持多行编辑、可见光标、Markdown、流式文本、紧凑工具状态、prompt history 和 slash picker。`/resume` 会恢复最近对话并可按页加载更早历史；`/trust` 将当前 workspace 写入用户级信任文件；`/name <name>` 为当前 session 写入持久名称；`/fork` 创建保留当前可发送上下文的新 child session；`/model`、`/effort`、`/reasoning` 提供选择器。
+TUI 支持多行编辑、可见光标、Markdown、流式文本、紧凑工具状态、prompt history 和 slash picker。`/resume` 会恢复最近对话并可按页加载更早历史；`/trust` 将当前 workspace 写入用户级信任文件；`/name <name>` 为当前 session 写入持久名称；`/fork` 创建保留当前可发送上下文的新 child session；`/model`、`/effort`、`/reasoning` 提供选择器。`/memory` 查看本地记忆状态，`/compact` 将当前 session 历史压缩为可审计的本地 summary。
 
 ## 演示 fixture
 
@@ -31,6 +31,7 @@ TUI 支持多行编辑、可见光标、Markdown、流式文本、紧凑工具�
 - 文件/搜索/PowerShell 工具：工作区路径保护、超时、截断、权限模式。
 - JSONL session：消息即时追加、损坏尾行恢复、历史分页。
 - Instructions、catalog-first Skills、`load_skill`、生命周期 hooks 和有界上下文压缩。
+- Context Harness：原生项目 instructions/Skills，加上可插拔的本地 `MemoryPlugin` 与零模型 deterministic compaction；P3 observational memory 仅保留设计，不在当前版本启用。
 - todo 持久化、脱敏本地 telemetry、MCP stdio JSON-RPC 工具发现与注册；MCP 仅在 `NJU_AGENT_MCP_SERVERS` 显式配置时启动。
 - OpenAI Chat/Responses、Anthropic Messages 原生适配。
 

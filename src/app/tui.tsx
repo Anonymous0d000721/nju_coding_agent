@@ -11,10 +11,10 @@ import { ProjectTrustStore } from '../shared/trust.js';
 import { renderHelp } from './renderer.js';
 import { backspace, createEditorState, deleteForward, graphemeBoundaries, insertPaste, insertText, moveDown, moveLeft, moveRight, moveUp, parseBracketedPaste, slashCompletions, submitEditor, type EditorState } from './editor-state.js';
 import type { SessionEntry } from '../session/session-types.js';
-import type { AppResult, AppServices, runPrompt } from './app.js';
+import type { AppResult, AppServices, compactSession, memoryStatus, runPrompt } from './app.js';
 
 export type RunPrompt = typeof runPrompt;
-export interface TuiOptions { config: AgentConfig; services: AppServices; runPrompt: RunPrompt; }
+export interface TuiOptions { config: AgentConfig; services: AppServices; runPrompt: RunPrompt; compactSession: typeof compactSession; memoryStatus: typeof memoryStatus; }
 type TuiStatus = 'idle' | 'hydrating' | 'running' | 'cancelling' | 'error';
 type PickerKind = 'resume' | 'model' | 'effort' | 'reasoning-display';
 type PickerOption = { label: string; value: string; description?: string; disabled?: boolean };
@@ -28,7 +28,7 @@ export const TUI_COMMANDS = [
   { name: '/new', description: 'start a new session' }, { name: '/fork', description: 'fork current session' }, { name: '/trust', description: 'trust this workspace' }, { name: '/name', description: 'name current session' }, { name: '/sessions', description: 'list sessions' },
   { name: '/resume', description: 'select a session' }, { name: '/model', description: 'select a model' },
   { name: '/effort', description: 'select reasoning effort' }, { name: '/reasoning', description: 'toggle reasoning display' },
-  { name: '/thinking', description: 'alias for /reasoning' }, { name: '/compact', description: 'compaction status' },
+  { name: '/thinking', description: 'alias for /reasoning' }, { name: '/memory', description: 'show local memory status' }, { name: '/compact', description: 'compact current session' },
   { name: '/quit', description: 'exit TUI' }, { name: '/exit', description: 'exit TUI' },
 ] as const;
 
@@ -38,7 +38,7 @@ export async function runTui(options: TuiOptions): Promise<AppResult> {
   return { exitCode: 0 };
 }
 
-function TuiApp({ config, runPrompt }: TuiOptions) {
+function TuiApp({ config, runPrompt, compactSession, memoryStatus }: TuiOptions) {
   const app = useApp();
   const [editor, setEditor] = useState<EditorState>(() => createEditorState());
   const [messages, setMessages] = useState<TuiMessage[]>(() => config.session.id ? [{ role: 'system', text: 'Loading session history…' }] : [{ role: 'system', text: `nju-agent ${config.model.model} · type /help for commands` }]);
@@ -163,7 +163,7 @@ function TuiApp({ config, runPrompt }: TuiOptions) {
     if (status === 'hydrating' || status === 'running' || status === 'cancelling') return;
     const submitted = submitEditor(editor); if (!submitted.prompt) return;
     setEditor(submitted.state); const raw = submitted.prompt; const line = raw.trim();
-    if (line.startsWith('/')) { await handleCommand(line, { app, config, sessionId, setSessionId, showReasoning, setShowReasoning, openPicker, appendSystem, appendError, persistEffort, setModel, resumeSession }); return; }
+    if (line.startsWith('/')) { await handleCommand(line, { app, config, sessionId, setSessionId, showReasoning, setShowReasoning, openPicker, appendSystem, appendError, persistEffort, setModel, resumeSession, compactSession, memoryStatus }); return; }
     append({ role: 'user', text: raw }); setStatus('running'); const signal = new AbortController(); controller.current = signal;
     try {
       const result = await runPrompt(config, raw, sessionId, 'text', config.model.thinking, undefined, showReasoning, (event) => setMessages((items) => applyAgentEvent(items, event, showReasoning)), signal.signal);
@@ -278,7 +278,7 @@ export function applyAgentEvent(messages: TuiMessage[], event: AgentStreamEvent,
   return messages;
 }
 function appendToLast(messages: TuiMessage[], role: 'assistant' | 'thinking', delta: string): TuiMessage[] { const last = messages.at(-1); return last?.role === role ? [...messages.slice(0, -1), { role, text: `${last.text}${delta}` }] : [...messages, { role, text: delta }]; }
-interface CommandContext { app: ReturnType<typeof useApp>; config: AgentConfig; sessionId?: string; setSessionId: (value: string | undefined) => void; showReasoning: boolean; setShowReasoning: (value: boolean) => void; openPicker: (kind: PickerKind) => Promise<void>; appendSystem: (text: string) => void; appendError: (text: string) => void; persistEffort: (level: ThinkingLevel, targetSessionId?: string) => Promise<void>; setModel: (model: string) => void; resumeSession: (sessionId?: string) => Promise<void>; }
+interface CommandContext { app: ReturnType<typeof useApp>; config: AgentConfig; sessionId?: string; setSessionId: (value: string | undefined) => void; showReasoning: boolean; setShowReasoning: (value: boolean) => void; openPicker: (kind: PickerKind) => Promise<void>; appendSystem: (text: string) => void; appendError: (text: string) => void; persistEffort: (level: ThinkingLevel, targetSessionId?: string) => Promise<void>; setModel: (model: string) => void; resumeSession: (sessionId?: string) => Promise<void>; compactSession: typeof compactSession; memoryStatus: typeof memoryStatus; }
 async function handleCommand(line: string, ctx: CommandContext): Promise<void> {
   if (line === '/quit' || line === '/exit') { ctx.app.exit(); return; } if (line === '/help') { ctx.appendSystem(renderHelp().trim()); return; } if (line === '/new') { ctx.setSessionId(undefined); ctx.appendSystem('Started a new session.'); return; }
   if (line === '/trust') { new ProjectTrustStore().trust(ctx.config.workspaceRoot); ctx.config.projectTrusted = true; ctx.appendSystem('Workspace trusted for future runs.'); return; }
@@ -288,7 +288,8 @@ async function handleCommand(line: string, ctx: CommandContext): Promise<void> {
   if (line === '/reasoning' || line === '/thinking') { await ctx.openPicker('reasoning-display'); return; } if (/^\/(reasoning|thinking) /.test(line)) { const requested = line.replace(/^\/(reasoning|thinking)\s+/, ''); if (requested !== 'on' && requested !== 'off') { ctx.appendError('Usage: /reasoning [on|off]'); return; } ctx.setShowReasoning(requested === 'on'); ctx.appendSystem(`reasoning display: ${requested}`); return; }
   if (line === '/effort') { await ctx.openPicker('effort'); return; } if (line.startsWith('/effort ')) { const requested = line.slice(8).trim(); if (!isThinkingLevel(requested)) { ctx.appendError(`Invalid effort: ${requested}. Expected: ${supportedEffortText(ctx.config)}`); return; } const level = clampThinkingLevel(requested, ctx.config.model.thinking.map); await ctx.persistEffort(level); ctx.appendSystem(`effort: ${level}`); return; }
   if (line === '/model') { await ctx.openPicker('model'); return; } if (line.startsWith('/model ')) { ctx.setModel(line.slice(7).trim()); return; }
-  if (line === '/compact') { ctx.appendSystem('Context compaction is not implemented.'); return; }
+  if (line === '/memory') { const status = ctx.memoryStatus(ctx.config); ctx.appendSystem(`memory: ${status.enabled ? 'enabled' : 'disabled'}\ndirectory: ${status.directory}\nindex: ${status.indexExists ? `${status.indexLines} lines, ${status.indexBytes} bytes${status.truncated ? ' (truncated for context)' : ''}` : 'not created'}\ntopics: ${status.topics.join(', ') || '(none)'}`); return; }
+  if (line === '/compact') { if (!ctx.sessionId) { ctx.appendError('Start a session before compacting it.'); return; } try { const result = await ctx.compactSession(ctx.config, ctx.sessionId); ctx.appendSystem(result.compacted ? `Compacted ${result.omittedMessages} messages into a deterministic ${result.outputChars}-character summary.` : 'Not enough session history to compact.'); } catch (error) { ctx.appendError(`Could not compact session: ${asMessage(error)}`); } return; }
   if (line === '/sessions') { if (!ctx.config.session.enabled) { ctx.appendSystem('Sessions are disabled.'); return; } const sessions = await new JsonlSessionStore(`${ctx.config.workspaceRoot}/.nju-agent`).list(); ctx.appendSystem(sessions.length ? sessions.map((item) => `${item.name ? `${item.name} · ` : ''}${item.id}`).join('\n') : 'No sessions.'); return; }
   if (line === '/resume') { await ctx.openPicker('resume'); return; } if (line.startsWith('/resume ')) { await ctx.resumeSession(line.slice(8).trim() || undefined); return; } ctx.appendError(`Unknown command: ${line}`);
 }

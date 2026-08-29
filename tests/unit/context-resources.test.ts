@@ -12,10 +12,11 @@ describe('context resources', () => {
     await fs.writeFile(path.join(root, 'AGENTS.md'), 'root rules');
     await fs.writeFile(path.join(root, 'child', 'CLAUDE.md'), 'child rules');
 
-    const items = loadProjectInstructions(path.join(root, 'child'));
+    expect(loadProjectInstructions(path.join(root, 'child'), false)).toEqual([]);
+    const items = loadProjectInstructions(path.join(root, 'child'), true);
 
     expect(items.map((item) => item.content)).toEqual(['root rules', 'child rules']);
-    expect(items.every((item) => item.path && item.trusted === false)).toBe(true);
+    expect(items.every((item) => item.path && item.trusted === true)).toBe(true);
   });
 
   it('keeps untrusted skills out and exposes only trusted catalog metadata', async () => {

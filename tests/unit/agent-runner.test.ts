@@ -10,9 +10,10 @@ import { ToolRegistry } from '../../src/tools/registry.js';
 class FakeModel implements ModelClient {
   private index = 0;
 
-  constructor(private readonly turns: AssistantTurn[]) {}
+  constructor(private readonly turns: AssistantTurn[], private readonly requests: ModelRequest[] = []) {}
 
-  async complete(_request: ModelRequest): Promise<AssistantTurn> {
+  async complete(request: ModelRequest): Promise<AssistantTurn> {
+    this.requests.push(request);
     const turn = this.turns[this.index];
     this.index += 1;
     if (!turn) throw new Error('unexpected model call');
@@ -125,9 +126,26 @@ describe('AgentRunner', () => {
       maxToolCalls: 1,
       maxContextChars: 40,
       initialMessages: Array.from({ length: 9 }, (_, index) => ({ role: 'user' as const, content: `${index}:${'a'.repeat(100)}` })),
-      onCompaction: (_summary, omittedMessages) => { compactions.push(omittedMessages); },
+      onCompaction: (compaction) => { compactions.push(compaction.omittedMessages); },
     });
     expect(compactions[0]).toBeGreaterThan(0);
+  });
+
+  it('uses the compacted projection for the model request', async () => {
+    const requests: ModelRequest[] = [];
+    const model = new FakeModel([assistant({ text: 'done' })], requests);
+    const runner = createRunner(model);
+    await runner.run('current', {
+      maxTurns: 1,
+      maxToolCalls: 1,
+      maxContextChars: 120,
+      initialMessages: Array.from({ length: 9 }, (_, index) => ({ role: 'user' as const, content: `${index}:${'a'.repeat(100)}` })),
+    });
+
+    expect(requests).toHaveLength(1);
+    expect(requests[0]?.messages[0]).toMatchObject({ role: 'system' });
+    expect(requests[0]?.messages[0]?.content).toContain('Deterministic context summary');
+    expect(requests[0]?.messages.at(-1)?.content).toBe('current');
   });
 
   it('runs onStop for normal completion', async () => {

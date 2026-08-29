@@ -53,6 +53,10 @@ export interface SummaryEntry extends BaseSessionEntry {
   summary: string;
   coveredEntryIds: string[];
   reason: 'manual' | 'threshold' | 'overflow';
+  algorithm?: 'deterministic-v1';
+  firstKeptEntryId?: string;
+  stats?: { sourceChars: number; outputChars: number; omittedToolOutputChars: number };
+  supersedesEntryIds?: string[];
 }
 
 export type SessionEntry = SessionStartEntry | MessageEntry | RunStartEntry | RunEndEntry | ThinkingLevelChangeEntry | SessionNameEntry | SummaryEntry;
