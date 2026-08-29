@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { applyAgentEvent, editorLinesWithCursor, isMarkdownTableSeparator, isMarkdownTableRow, messagePresentation, parseMarkdownTableRow, sessionEntriesToTuiMessages, type TuiMessage } from '../../src/app/tui.js';
+import { applyAgentEvent, editorLinesWithCursor, formatStatusBar, isMarkdownTableSeparator, isMarkdownTableRow, messagePresentation, parseMarkdownTableRow, sessionEntriesToTuiMessages, type TuiMessage } from '../../src/app/tui.js';
 import { createEditorState } from '../../src/app/editor-state.js';
 import type { SessionEntry } from '../../src/session/session-types.js';
 import type { AgentStreamEvent } from '../../src/agent/types.js';
@@ -58,6 +58,16 @@ describe('TUI event rendering', () => {
       { role: 'system', text: 'ready' },
       { role: 'tool', text: 'read a lines 1–1', ok: true, toolCallId: 'call-1' },
     ]);
+  });
+
+  it('keeps the status bar compact while retaining active controls', () => {
+    const text = formatStatusBar({ status: 'running', model: 'gpt-5', effort: 'medium', sessionLabel: 'demo', permissionMode: 'yolo', showReasoning: true });
+
+    expect(text).toBe('run · gpt-5 · medium · demo · yolo · R:on · ^J newline · Esc cancel');
+    expect(text).not.toContain('api ');
+    expect(text).not.toContain('permission ');
+    expect(text).not.toContain('reasoning ');
+    expect(text).not.toContain('session ');
   });
 
   it('lists rename and reload commands', () => {

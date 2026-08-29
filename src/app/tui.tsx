@@ -261,7 +261,7 @@ function TuiApp({ config, runPrompt, compactSession, memoryStatus }: TuiOptions)
 
   const busy = status === 'hydrating' || status === 'running' || status === 'cancelling';
   const statusColor = status === 'error' ? 'red' : busy ? 'yellow' : 'gray';
-  const statusText = `api ${config.model.apiFormat} · model ${config.model.model} · effort ${config.model.thinking.level} · session ${sessionLabel ?? '(new)'}${sessionId ? ` · id ${sessionId.slice(0, 8)}` : ''} · permission ${config.permissionMode} · reasoning ${showReasoning ? 'on' : 'off'} · ${status} · Ctrl+J newline · Esc cancel`;
+  const statusText = formatStatusBar({ status, model: config.model.model, effort: config.model.thinking.level, sessionLabel, permissionMode: config.permissionMode, showReasoning });
 
   return <Box flexDirection="column">
     <Text color="gray" dimColor>nju-agent · {config.workspaceRoot}</Text>
@@ -278,6 +278,12 @@ function TuiApp({ config, runPrompt, compactSession, memoryStatus }: TuiOptions)
 function EditorView({ editor, busy }: { editor: EditorState; busy: boolean }) {
   const lines = editorLinesWithCursor(editor);
   return <Box borderStyle="round" flexDirection="column">{lines.map((line, index) => <Text key={index}><Text color={index === 0 ? (busy ? 'yellow' : 'green') : 'gray'}>{index === 0 ? (busy ? '… ' : '> ') : '  '}</Text>{line.before}<Text underline bold color={busy ? 'yellow' : 'white'}>{line.at || '▌'}</Text>{line.after}</Text>)}</Box>;
+}
+
+export function formatStatusBar(input: { status: TuiStatus; model: string; effort: ThinkingLevel; sessionLabel?: string; permissionMode: AgentConfig['permissionMode']; showReasoning: boolean }): string {
+  const state = input.status === 'running' ? 'run' : input.status === 'cancelling' ? 'cancel' : input.status === 'hydrating' ? 'load' : input.status;
+  const session = input.sessionLabel?.trim() || 'new';
+  return `${state} · ${input.model} · ${input.effort} · ${session} · ${input.permissionMode} · R:${input.showReasoning ? 'on' : 'off'} · ^J newline · Esc cancel`;
 }
 
 export function editorLinesWithCursor(editor: EditorState): Array<{ before: string; at: string; after: string }> {
