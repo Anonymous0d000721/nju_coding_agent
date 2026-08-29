@@ -109,7 +109,7 @@ describe('AgentRunner', () => {
   it('stops after a plain assistant answer', async () => {
     const runner = createRunner(new FakeModel([assistant({ text: 'done' })]));
 
-    const result = await runner.run('hello', { maxTurns: 3, maxToolCalls: 5 });
+    const result = await runner.run('hello', {});
 
     expect(result.stopReason).toBe('model_finished');
     expect(result.messages.map((message) => message.role)).toEqual(['user', 'assistant']);
@@ -121,19 +121,31 @@ describe('AgentRunner', () => {
       assistant({ toolCalls: [{ id: 'verify-1', name: 'run_command', argumentsJson: '{}' }] }),
       assistant({ text: 'verified' }),
     ]));
-    const result = await runner.run('fix the bug and run tests', { maxTurns: 3, maxToolCalls: 2, goalGate: true });
+    const result = await runner.run('fix the bug and run tests', { goalGate: true });
     expect(result.stopReason).toBe('model_finished');
     expect(result.messages.some((message) => message.content.includes('Host verification requirement'))).toBe(true);
     expect(result.messages.some((message) => message.role === 'tool' && message.toolCallId === 'verify-1')).toBe(true);
   });
 
+  it('continues beyond eight model turns without a turn or tool-call cap', async () => {
+    const model = new FakeModel([
+      ...Array.from({ length: 9 }, (_, index) => assistant({ toolCalls: [{ id: `tc-${index}`, name: 'echo', argumentsJson: `{"value":"${index}"}` }] })),
+      assistant({ text: 'finished after a long task' }),
+    ]);
+    const runner = createRunner(model);
+
+    const result = await runner.run('complete the multi-step task', {});
+
+    expect(result.stopReason).toBe('model_finished');
+    expect(result.turns).toBe(10);
+    expect(result.toolCalls).toBe(9);
+    expect(result.messages.at(-1)).toMatchObject({ role: 'assistant', content: 'finished after a long task' });
+  });
 
   it('reports context compaction through the run callback', async () => {
     const compactions: number[] = [];
     const runner = createRunner(new FakeModel([assistant({ text: 'done' })]));
     await runner.run('current', {
-      maxTurns: 1,
-      maxToolCalls: 1,
       maxContextChars: 40,
       initialMessages: Array.from({ length: 9 }, (_, index) => ({ role: 'user' as const, content: `${index}:${'a'.repeat(100)}` })),
       onCompaction: (compaction) => { compactions.push(compaction.omittedMessages); },
@@ -159,7 +171,7 @@ describe('AgentRunner', () => {
       return response;
     };
     const runner = createRunner(model);
-    const result = await runner.run('initial', { maxTurns: 2, maxToolCalls: 1, control });
+    const result = await runner.run('initial', { control });
 
     expect(result.stopReason).toBe('model_finished');
     expect(requests).toHaveLength(2);
@@ -172,8 +184,6 @@ describe('AgentRunner', () => {
     const model = new FakeModel([assistant({ text: 'done' })], requests);
     const runner = createRunner(model);
     await runner.run('current', {
-      maxTurns: 1,
-      maxToolCalls: 1,
       maxContextChars: 120,
       initialMessages: Array.from({ length: 9 }, (_, index) => ({ role: 'user' as const, content: `${index}:${'a'.repeat(100)}` })),
     });
@@ -188,7 +198,7 @@ describe('AgentRunner', () => {
     const stops: string[] = [];
     const hooks = new HookRegistry();
     hooks.register({ onStop: ({ result }) => { stops.push(result.stopReason); } });
-    await createRunner(new FakeModel([assistant({ text: 'done' })]), hooks).run('hello', { maxTurns: 3, maxToolCalls: 5 });
+    await createRunner(new FakeModel([assistant({ text: 'done' })]), hooks).run('hello', {});
     expect(stops).toEqual(['model_finished']);
   });
 
@@ -196,8 +206,6 @@ describe('AgentRunner', () => {
     const events: string[] = [];
     const runner = createRunner(new StreamingFakeModel());
     const result = await runner.run('hello', {
-      maxTurns: 3,
-      maxToolCalls: 5,
       onStreamEvent: (event) => { if (event.type === 'text_delta') events.push(event.delta); },
     });
 
@@ -213,8 +221,6 @@ describe('AgentRunner', () => {
     const events: string[] = [];
 
     await runner.run('use a tool', {
-      maxTurns: 3,
-      maxToolCalls: 5,
       onStreamEvent: (event) => { if (event.type === 'tool_call') events.push(`call:${event.toolCall.name}`); if (event.type === 'tool_result') events.push(`result:${event.result.toolName}:${event.result.ok}`); },
     });
 
@@ -231,7 +237,7 @@ describe('AgentRunner', () => {
       assistant({ id: 'a2', text: 'finished' }),
     ]));
 
-    const result = await runner.run('use a tool', { maxTurns: 3, maxToolCalls: 5 });
+    const result = await runner.run('use a tool', {});
 
     expect(result.stopReason).toBe('model_finished');
     expect(result.messages.map((message) => message.role)).toEqual(['user', 'assistant', 'tool', 'assistant']);
@@ -245,7 +251,7 @@ describe('AgentRunner', () => {
       assistant({ text: 'finished' }),
     ]));
 
-    const result = await runner.run('use a tool', { maxTurns: 3, maxToolCalls: 5 });
+    const result = await runner.run('use a tool', {});
     const messages = toAnthropicMessages({ systemPrompt: 'system', tools: [], messages: result.messages.slice(0, 3) });
 
     expect(messages[1]).toMatchObject({ role: 'assistant', content: [{ type: 'tool_use', id: 'call_01' }] });
@@ -258,7 +264,7 @@ describe('AgentRunner', () => {
       assistant({ text: 'recovered' }),
     ]));
 
-    const result = await runner.run('call missing tool', { maxTurns: 3, maxToolCalls: 5 });
+    const result = await runner.run('call missing tool', {});
 
     expect(result.stopReason).toBe('model_finished');
     expect(result.messages[2]).toMatchObject({ role: 'tool', toolCallId: 'tc1' });
@@ -277,17 +283,4 @@ describe('AgentRunner', () => {
     expect(messages.at(-1)?.content).toBe('current request');
   });
 
-  it('stops before exceeding the total tool call budget', async () => {
-    const runner = createRunner(new FakeModel([
-      assistant({ toolCalls: [
-        { id: 'tc1', name: 'echo', argumentsJson: '{"value":"1"}' },
-        { id: 'tc2', name: 'echo', argumentsJson: '{"value":"2"}' },
-      ] }),
-    ]));
-
-    const result = await runner.run('too many tools', { maxTurns: 3, maxToolCalls: 1 });
-
-    expect(result.stopReason).toBe('max_tool_calls');
-    expect(result.messages.map((message) => message.role)).toEqual(['user', 'assistant']);
-  });
 });

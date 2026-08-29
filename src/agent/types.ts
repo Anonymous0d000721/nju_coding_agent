@@ -30,7 +30,7 @@ export interface AssistantTurn {
   raw?: unknown;
 }
 
-export type StopReason = 'completed' | 'model_finished' | 'user_cancelled' | 'max_turns' | 'max_tool_calls' | 'budget_exhausted' | 'context_overflow' | 'fatal_error';
+export type StopReason = 'completed' | 'model_finished' | 'user_cancelled' | 'budget_exhausted' | 'context_overflow' | 'fatal_error';
 
 export interface AgentRunControl {
   queue(message: string): void;
@@ -40,8 +40,8 @@ export interface AgentRunControl {
 }
 
 export interface AgentRunOptions {
-  maxTurns: number;
-  maxToolCalls: number;
+  /** Optional wall-clock safety limit for one run. */
+  maxDurationMs?: number;
   maxContextChars?: number;
   compactor?: (messages: AgentMessage[], maxChars: number, keepMessages?: number) => CompactionResult;
   initialMessages?: AgentMessage[];

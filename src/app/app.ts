@@ -145,7 +145,7 @@ export async function runPrompt(config: AgentConfig, prompt: string, sessionId?:
   });
   try {
     let streamedText = false;
-    const result = await runner.run(effectivePrompt, { maxTurns: 8, maxToolCalls: 24, maxContextChars: 100_000, compactor: compactor.compact.bind(compactor), initialMessages: previousMessages, persistUserMessage: false, userMessageEntryId: userEntry?.id, thinking, goalGate: true,
+    const result = await runner.run(effectivePrompt, { maxContextChars: 100_000, compactor: compactor.compact.bind(compactor), initialMessages: previousMessages, persistUserMessage: false, userMessageEntryId: userEntry?.id, thinking, goalGate: true,
       control,
       onStreamEvent: mode === 'text' && (streamOutput || onAgentEvent) ? async (event) => {
         await onAgentEvent?.(event);
