@@ -1,21 +1,25 @@
-# Design Decisions
+# 设计决策
 
-## Native model protocols
+## 自行实现核心循环
 
-The project implements its own provider-neutral message and tool loop. Provider clients only translate requests and responses for OpenAI Chat, OpenAI Responses, and Anthropic Messages. This keeps tool-result pairing, persistence, budgets, and cancellation in host code and avoids an agent framework.
+项目不依赖智能体框架。模型客户端只适配 OpenAI Chat、OpenAI Responses 和 Anthropic Messages；工具调用解析、结果配对、循环终止、预算、取消和错误处理保留在主机代码中，便于解释和测试。
 
-## JSONL sessions
+## 追加式 JSONL 会话
 
-Sessions use append-only JSONL because entries are inspectable, easy to recover after a process interruption, and suitable for future summary or branch entries. The TUI treats the session store as the source of truth and reads recent history through a bounded cursor API.
+会话使用追加式 JSONL，因为记录可检查，进程中断后容易恢复，也能承载摘要、命名和分支条目。会话存储是界面的事实来源，恢复时通过有界游标读取最近历史，较旧内容按需分页。
 
-## Ink TUI
+## 终端界面边界
 
-Ink is limited to interactive rendering and input ownership. `runPrompt` and `AgentRunner` remain independent of React so text, print, JSON, and tests retain direct output contracts. The TUI uses a visible software cursor and semantic transcript states, with tool output intentionally compact.
+Ink 只负责交互渲染和输入。`runPrompt` 与 `AgentRunner` 不依赖 React，因此文本、打印、JSON、RPC 和测试都能复用同一运行逻辑。界面采用 Transcript、Editor、Widget Area、Status Bar 的层次；Transcript 无外框，Editor 是默认唯一边框区域，编辑器不额外留内边距，其他区域按需显示。
 
-## Progressive context
+## 渐进式上下文
 
-Project instructions are labeled data, Skills are catalog-first, and full Skill text is loaded only by exact registered name. Compaction is bounded and preserves the original session log; the model receives a summary while the UI can still page through the full local history.
+项目指令以带来源标签的数据注入；技能采用目录优先和按名加载。Markdown Memory 使用本地索引和主题文件，写入需要明确的记忆意图与证据。压缩不访问云端模型，只生成确定性摘要并保留原始会话。
 
-## MCP boundary
+## 权限与信任
 
-MCP is a transport and discovery mechanism, not an authorization layer. stdio JSON-RPC tools are normalized into the host registry and inherit host schema validation, risk metadata, timeout, error normalization, and redaction. External descriptions cannot grant permission.
+初始权限模式为 `yolo`，工具以当前用户权限运行；`strict` 和 `confirm` 提供更保守的策略。项目 Trust 主要决定是否加载工作区内的指令、技能、插件和 MCP 配置，不等同于沙箱，也不替代操作系统隔离。
+
+## MCP 边界
+
+MCP stdio JSON-RPC 只负责连接和工具发现。外部描述不能自行授予权限；发现到的工具必须经过主机的参数校验、风险标记、超时、错误规范化和脱敏。

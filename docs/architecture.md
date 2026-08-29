@@ -1,23 +1,30 @@
-# Architecture
+# 系统架构
 
-nju-agent separates model transport, the agent loop, tools, persistence, and terminal UI.
+nju-agent 将模型通信、智能体循环、工具、持久化和终端界面分开实现。
 
 ```text
-CLI/App
-  -> context resources + tool registry + session store
-  -> AgentRunner
-      -> ModelClient (Chat / Responses / Anthropic)
-      -> ToolExecutor (schema, policy, timeout, redaction)
-      -> lifecycle hooks and stream events
-  -> JSONL session + local telemetry
+命令行 / 应用入口
+  ├─ 上下文资源、工具注册表、会话存储
+  └─ AgentRunner
+       ├─ ModelClient（OpenAI Chat、Responses、Anthropic）
+       ├─ ToolExecutor（参数校验、权限、超时、脱敏）
+       └─ 生命周期钩子与流式事件
+  ├─ JSONL 会话
+  └─ 本地运行记录
 ```
 
-`AgentRunner` owns the deterministic loop: build a bounded message context, request a model turn, persist the assistant turn, execute tool calls, persist each tool result, and stop on completion, cancellation, or budgets. Every tool call receives exactly one normalized result.
+## 运行主链路
 
-The Ink TUI consumes runner events and delegates execution to `runPrompt`; it does not parse SSE or execute tools. A resumed TUI session hydrates its transcript from the same JSONL source used to restore model context. Recent history is loaded first and older pages are loaded through a cursor.
+`AgentRunner` 负责确定性循环：组装有界上下文，发起一次模型请求，保存模型消息，执行工具调用，保存每个工具结果，并在模型完成、取消、错误或预算耗尽时结束。每个工具调用只产生一个规范化结果。
 
-Project instructions are bounded and labeled as project-provided data. Skills use catalog-first disclosure: trusted directories expose names and descriptions, while `load_skill` reads one registered skill by name. Hooks are host callbacks around run, model, tool, turn, and stop boundaries.
+模型客户端只负责协议转换；工具执行、工具结果配对、上下文预算、持久化和取消逻辑均由项目自身完成。终端界面消费运行事件，不解析模型流协议，也不直接执行工具。
 
-Context compaction replaces old context with a bounded summary message for the model request. It never deletes the original append-only session entries. UI history and model context budgets are independent.
+## 上下文与会话
 
-MCP support is opt-in through the `NJU_AGENT_MCP_SERVERS` JSON environment variable. With no configuration, no external process is started. Each configured stdio server is initialized, its tools are discovered, and the resulting definitions are registered once with the host registry; all discovered tools inherit host validation and policy. Transports are closed after the run or on setup failure.
+项目指令和技能受信任边界控制。技能先只提供名称和简介，模型通过已注册名称按需加载正文。会话采用追加式 JSONL，支持恢复、命名、分页和分支。确定性本地压缩只生成有界摘要，不删除原始会话记录；模型上下文与界面历史分别受预算控制。
+
+## 插件与 MCP
+
+受信任工作区可以加载 `.nju-agent/plugins/` 中的用户插件；插件工具仍进入统一注册表和 `ToolExecutor`，`/reload` 只影响下一次运行，不热替换活动运行。MCP 是传输和发现机制，不是授权机制。配置 `NJU_AGENT_MCP_SERVERS` 后，主进程通过标准输入输出发现工具，并让其继承主机的校验、权限、超时、错误规范化和脱敏策略。
+
+未配置 MCP 时不会启动外部进程。外部进程会话在运行结束或初始化失败时关闭。

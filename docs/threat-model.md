@@ -1,17 +1,19 @@
-# Threat Model and Limits
+# 威胁模型与限制
 
-## Untrusted inputs
+## 不可信输入
 
-Model output, repository files, project instructions, Skill text, tool output, and MCP server descriptions are untrusted. They may contain prompt injection or requests to disclose secrets. They are never allowed to override host policy, path guards, tool schemas, or protocol pairing.
+模型输出、仓库文件、项目指令、技能正文、工具输出和 MCP 服务描述都视为不可信。它们不能绕过主机策略、路径保护、工具参数校验或协议中的消息配对，也不能要求泄露密钥。
 
-## Host protections
+## 主机保护
 
-File tools resolve paths inside the workspace and protect sensitive locations. Shell execution uses an explicit working directory, bounded output, timeout, cancellation, and `shell: false`. Tool arguments, errors, telemetry, and session-visible output are redacted before persistence where applicable. Strict/confirm modes deny write and shell operations without an approval callback.
+文件工具将路径规范化并限制在工作区内，同时保护敏感位置。命令工具使用明确的工作目录、输出上限、超时、取消和 `shell: false`。工具参数、错误、运行记录和会话可见输出在适用时进行脱敏。`yolo` 为默认模式；`strict`/`confirm` 在没有审批回调时拒绝写入和命令操作。
 
-Skills and project resources are only scanned from trusted project directories. Trust is resolved by `--approve`, `--no-approve`, or the user-level `~/.nju-agent/trust.json` store; TUI `/trust` records the canonical workspace path. The normal prompt receives Skill metadata, not every Skill body. `load_skill` accepts registered names rather than arbitrary model-provided paths. MCP tools are external-risk by default and are still routed through host schema and policy checks.
+技能和项目资源只从受信任目录扫描。Trust 可由 `--approve`、`--no-approve` 或用户级信任文件决定。普通提示只接收技能目录，`load_skill` 只能读取已注册名称，不能读取模型任意指定的路径。MCP 工具默认视为外部风险，仍需经过主机策略。
 
-## Known limits
+## 数据边界
 
-This is not an operating-system sandbox. Tools run with the permissions of the user who starts nju-agent. Path checks and command filters cannot prove that every shell composition is safe. Strong isolation requires a container, VM, remote sandbox, or least-privilege account.
+会话 JSONL 和运行记录保存在本地，可能包含用户与模型对话内容；遥测不是远程分析服务，可通过 `--telemetry off` 关闭。Markdown Memory 只在本地保存，写入会进行密钥和凭据模式脱敏。
 
-Session JSONL is local and append-only, but it can contain user and model conversation data. Telemetry is local and can be disabled with `--telemetry off`; it must not be treated as a remote analytics service. Context summaries are lossy for the model, while original session history remains available for inspection and resume.
+## 已知限制
+
+nju-agent 不是操作系统沙箱。工具继承启动进程的权限，路径检查和命令过滤不能证明任意 PowerShell 组合都安全；高风险任务应使用容器、虚拟机、远程沙箱或最小权限账户。上下文摘要对模型是有损的，但原始会话仍可检查和恢复。`shell: false` 不是安全边界。

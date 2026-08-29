@@ -1,45 +1,34 @@
 # nju-agent
 
-独立实现的 TypeScript/Node.js 本地 coding agent。模型通过原生 tool calling 读取、修改、检查工作区；项目不使用 LangChain、Agents SDK 等 agent framework。
+一个独立实现的 TypeScript/Node.js 本地编程智能体，目标是让模型真正完成“读代码—执行命令—修改文件—运行测试—继续修复”的闭环，而不是只生成代码片段。
 
-## 运行
+## 特色
 
-要求 Node.js 22+：
+- **自研 AgentRunner**：自行实现多轮工具调用、上下文组装、工具结果回填、预算控制、取消、错误处理和流式事件，不依赖 LangChain、LlamaIndex、Agents SDK 等智能体框架。
+- **Hashline 安全编辑**：读取文件时生成行号哈希锚点，编辑前校验文件是否发生变化，拒绝过期锚点和重叠修改，减少误改代码的风险。
+- **可恢复工程会话**：使用追加式 JSONL 保存消息，支持 `/resume`、会话命名、分页、分支和中断后继续工作。
+- **本地上下文架构**：支持项目指令、技能按需加载、Markdown 长期记忆，以及零模型、零网络的确定性上下文压缩；原始会话不会被删除。
+- **本地工具链**：文件读写、PowerShell、Git、后台任务、待办和 MCP stdio 工具均由本地 ToolExecutor 统一校验、执行、超时和脱敏。
+- **可集成、可扩展**：提供 JSONL 事件模式和长期运行的 JSON-RPC 模式；支持工作区用户插件、工具重载、权限模式，以及运行中的排队消息和 steer 插话。
+- **面向真实任务验证**：`examples/` 包含可 reset、可恢复的订单缺陷修复、库存功能开发和 MCP 插件自托管场景。
+
+## 快速开始
+
+需要 Node.js 22+：
 
 ```powershell
 npm install
 Copy-Item .env.example .env
-npm run dev -- --print "检查当前项目并运行测试"
-```
-
-在 `.env` 填写 `NJU_AGENT_API_KEY`、`NJU_AGENT_BASE_URL`、`NJU_AGENT_MODEL`，可用 `NJU_AGENT_API_FORMAT` 选择 `openai-chat`、`openai-responses` 或 `anthropic`。`--json` 输出机器可读结果，`--no-session` 不保存会话。默认启用本地 Markdown Memory 和 deterministic compaction；可用 `NJU_AGENT_MEMORY_ENABLED=false` 关闭，或用 `NJU_AGENT_MEMORY_DIR` 指定本地记忆目录。
-
-不带 prompt 进入 Ink TUI：
-
-```powershell
+# 填写 NJU_AGENT_API_KEY、NJU_AGENT_BASE_URL、NJU_AGENT_MODEL
 npm run dev
+npm run dev -- --print "检查项目并运行测试"
 ```
 
-TUI 支持多行编辑、可见光标、Markdown（包括表格）、流式文本、紧凑工具状态、prompt history 和 slash picker。`/resume` 会恢复最近对话并按 session name 或首句 prompt 显示；`/rename <session_name>` 可重命名当前 session；`/trust` 将当前 workspace 写入用户级信任文件；`/fork` 创建保留当前可发送上下文的新 child session；`/model`、`/effort`、`/reasoning` 提供选择器。`/memory` 查看本地记忆状态，`/compact` 将当前 session 历史压缩为可审计的本地 summary，`/reload` 重载用户插件并在下一次 run 生效。运行中按 Esc/Ctrl+C 取消，Enter 将草稿排队，Ctrl+Enter 发送 steering message。
+`--mode json` 输出 JSONL 事件，`--mode rpc` 启动 JSON-RPC JSONL 服务。凭据只从环境变量或未入库的 `.env` 读取。
 
-## 演示 fixture
+## 仓库与检查
 
-`examples/` 提供面向 bug 修复、功能开发和自举 `nju-mcp-adaptor` 的 agent 练习题；`examples/buggy-todo-cli/` 是其中一个无网络依赖的故意失败任务。fixture 自带 Vitest 配置，不参与主项目测试扫描。用户插件可放在受信任 workspace 的 `.nju-agent/plugins/*.mjs`，格式和安全约束见 `.nju-agent/skills/plugin-development/SKILL.md`。
-
-
-- AgentRunner：多轮工具调用、预算、取消、结构化错误和流式事件。
-- 文件/搜索/PowerShell 工具：工作区路径保护、超时、截断、权限模式。
-- JSONL session：消息即时追加、损坏尾行恢复、历史分页。
-- Instructions、catalog-first Skills、`load_skill`、生命周期 hooks 和有界上下文压缩。
-- Context Harness：原生项目 instructions/Skills，加上可插拔的本地 `MemoryPlugin`、零模型 deterministic compaction 和受信任 workspace 用户插件；P3 observational memory 仅保留设计，不在当前版本启用。
-- todo 持久化、脱敏本地 telemetry、MCP stdio JSON-RPC 工具发现与注册；MCP 仅在 `NJU_AGENT_MCP_SERVERS` 显式配置时启动。
-- OpenAI Chat/Responses、Anthropic Messages 原生适配。
-
-## 安全
-
-API key 只从环境变量或未入库 `.env` 读取。工具不是操作系统 sandbox，按启动用户权限运行；路径保护、权限策略、超时和 redaction 不能替代容器、VM 或最小权限账户。
-
-## 验证
+公开仓库地址：待发布后补充。
 
 ```powershell
 npm run typecheck
@@ -47,4 +36,4 @@ npm test -- --run
 npm run build
 ```
 
-架构、设计决策和限制见 `docs/architecture.md`、`docs/decisions.md`、`docs/threat-model.md`。参考代码只位于 `refs/`，不参与运行时。
+工具继承当前操作系统用户权限，nju-agent 不是安全沙箱；高风险任务请使用容器、虚拟机或最小权限账户。请勿提交 API 密钥。
