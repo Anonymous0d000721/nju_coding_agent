@@ -36,3 +36,7 @@ NJU_AGENT_THINKING_LEVEL
 ```
 
 外部服务只在明确配置后启动，发现的工具仍经过主机的 schema、风险、权限、超时和脱敏处理。
+
+## Hashline 编辑
+
+编辑文件前先调用 `read_file` 并指定 `format: "hashline"`。锚点格式为 `LINE#HASH`，当前 hash 长度为 6 位十六进制字符；读取结果中的 `LINE#HASH:` 可以直接复制，编辑器会兼容剥离尾部冒号，但不能复制后面的正文。`hashline_edit` 会在同一快照中校验所有锚点，拒绝过期或重叠编辑，并返回新的文件 hash、换行风格和 `changedAnchors`。编辑失败时应按提示重新读取文件，不要模糊重定位旧锚点。

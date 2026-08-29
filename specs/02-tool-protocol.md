@@ -149,10 +149,10 @@ interface ToolError {
 - 支持有界行/字节范围；
 - 敏感文件读取受权限策略控制；
 - 必须支持 `format: "plain" | "hashline"`，默认可以是 `plain`，但当模型准备编辑文件时应优先请求 `hashline`；
-- `hashline` 格式必须为每一行提供可复制的行锚点，例如 `12#A7:  const value = 1;`；
-- 行锚点由 1-indexed 行号和短内容 hash 组成，格式为 `LINE#HASH`；
+- `hashline` 格式必须为每一行提供可复制的行锚点，例如 `12#A1B2C3:  const value = 1;`；
+- 本项目 canonical 锚点格式为 `LINE#HASH`，hash 为 6 位十六进制字符；读取展示允许在锚点后带 `:` 和正文，但编辑器会兼容剥离单独的尾部冒号，不接受整行正文；
 - hash 必须由宿主对原始行内容确定性计算，至少应对缩进变化敏感；
-- `read_file(format: "hashline")` 可以额外返回整文件 revision/hash，用于检测整文件是否在读取后发生变化。
+- `read_file(format: "hashline")` 返回 `anchorFormat`、`lineHashLength`、`newlineStyle` 和整文件 `fileHash`，用于避免协议或换行语义误解。
 
 ### 9.2 `write_file`
 
@@ -202,8 +202,8 @@ interface HashlineEdit {
 - `insert_before` / `insert_after` 只接受 `anchor`；
 - `content` 是字面文件内容，不得包含 `12#A7:` 这类显示前缀，也不得包含 diff marker；
 - 成功后必须返回简短 diff preview；
-- 成功后应尽量返回变更区域的新 `LINE#HASH` anchors，方便模型连续编辑而不必整文件重读；
-- 失败时应在 `content` 中给出明确恢复建议，例如“请重新 `read_file` 获取新 hashline anchors”。
+- 成功后返回 `previousFileHash`、新的 `fileHash`、`editsApplied`、`newlineStyle` 和变更区域的 `changedAnchors`，方便模型连续编辑而不必整文件重读；
+- 失败时应在 `content` 和结构化 `details.hint` 中给出明确恢复建议，例如“请重新 `read_file(format: \"hashline\")` 获取新 hashline anchors”。
 
 设计理由：
 
@@ -297,9 +297,10 @@ Handler 必须：
 实现满足本规范需要测试证明：
 
 - 工具注册和重复名称拒绝；
-- JSON Schema 校验成功/失败；
+- JSON Schema 的 `oneOf`、`pattern`、`minItems` 校验成功/失败；
 - 每个内置工具的成功路径；
 - 未知工具和非法参数会转换为 tool result；
 - 文件不存在、hashline anchor 过期/不存在/非法、多个 edit 重叠、命令失败、超时、取消；
 - 截断和 artifact 引用行为；
-- 每个结果都正确配对 `tool_call_id`。
+- 每个结果都正确配对 `tool_call_id`；
+- 成功编辑可使用返回的 `changedAnchors` 继续编辑，CRLF 文件保持原换行风格，连续同路径写入不会产生临时文件残留。
