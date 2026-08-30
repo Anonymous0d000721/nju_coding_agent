@@ -10,14 +10,14 @@ export async function loadStore(file: string): Promise<OrderStore> {
 }
 
 export function listTasks(store: OrderStore, query: TaskQuery = {}): OrderTask[] {
-  const filtered = store.tasks.filter((task) => (!query.status || task.status === query.status) && (!query.overdueAt || task.dueAt < query.overdueAt));
+  const filtered = store.tasks.filter((task) => (!query.status || task.status === query.status) && (!query.overdueAt || task.dueAt <= query.overdueAt));
   const offset = query.offset ?? 0;
   const limit = query.limit ?? filtered.length;
   return filtered.slice(offset, offset + limit);
 }
 
 export function summarize(store: OrderStore, now: string): { pendingAmountCents: number; overdueCount: number } {
-  const pending = store.tasks.filter((task) => task.status !== 'done');
+  const pending = store.tasks.filter((task) => task.status === 'pending' || task.status === 'running');
   return {
     pendingAmountCents: pending.reduce((total, task) => total + task.amountCents, 0),
     overdueCount: pending.filter((task) => task.dueAt <= now).length,
