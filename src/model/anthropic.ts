@@ -5,6 +5,7 @@ import type { ToolDefinitionForModel } from '../tools/types.js';
 import { mappedThinkingValue } from './thinking.js';
 import { emit, readSse } from './streaming.js';
 import type { ModelStreamHandler } from './streaming.js';
+import { modelError } from './retry.js';
 
 export interface AnthropicClientOptions { apiKey: string; baseUrl: string; model: string; }
 export interface AnthropicResponse { id?: string; content?: Array<Record<string, unknown>>; stop_reason?: string | null; usage?: { input_tokens?: number; output_tokens?: number }; }
@@ -71,5 +72,4 @@ export function toAnthropicMessages(request: ModelRequest): Array<Record<string,
 function parseArguments(value: string): unknown { try { return JSON.parse(value); } catch { return {}; } }
 function toAnthropicTool(tool: ToolDefinitionForModel): Record<string, unknown> { return { name: tool.function.name, description: tool.function.description, input_schema: tool.function.parameters }; }
 function anthropicHeaders(apiKey: string): Record<string, string> { return { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' }; }
-function modelError(response: Response): Error { return new Error(`Model request failed: HTTP ${response.status} ${response.statusText}`); }
 function endpoint(value: string): string { const trimmed = value.replace(/\/+$/, ''); return trimmed.endsWith('/v1') ? trimmed : `${trimmed}/v1`; }

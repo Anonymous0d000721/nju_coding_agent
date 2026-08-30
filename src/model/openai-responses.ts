@@ -5,6 +5,7 @@ import { mappedThinkingValue } from './thinking.js';
 import { emit, readSse } from './streaming.js';
 import type { ModelStreamHandler } from './streaming.js';
 import type { ToolDefinitionForModel } from '../tools/types.js';
+import { modelError } from './retry.js';
 
 export interface OpenAIResponsesClientOptions { apiKey: string; baseUrl: string; model: string; }
 export interface OpenAIResponsesResponse { id?: string; status?: string; output_text?: string; output?: Array<Record<string, unknown>>; usage?: { input_tokens?: number; output_tokens?: number; total_tokens?: number }; }
@@ -49,5 +50,4 @@ function toResponsesInput(request: ModelRequest): Array<Record<string, unknown>>
 function toResponsesTool(tool: ToolDefinitionForModel): Record<string, unknown> { return { type: 'function', name: tool.function.name, description: tool.function.description, parameters: tool.function.parameters }; }
 function normalizeUsage(usage: OpenAIResponsesResponse['usage']): Usage | undefined { return usage ? { inputTokens: usage.input_tokens, outputTokens: usage.output_tokens, totalTokens: usage.total_tokens } : undefined; }
 function headers(apiKey: string): Record<string, string> { return { authorization: `Bearer ${apiKey}`, 'content-type': 'application/json' }; }
-function modelError(response: Response): Error { return new Error(`Model request failed: HTTP ${response.status} ${response.statusText}`); }
 function trim(value: string): string { return value.replace(/\/+$/, ''); }

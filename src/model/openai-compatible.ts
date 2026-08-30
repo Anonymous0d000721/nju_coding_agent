@@ -4,6 +4,7 @@ import type { ModelClient, ModelRequest } from './model-client.js';
 import { mappedThinkingValue } from './thinking.js';
 import { emit, readSse } from './streaming.js';
 import type { ModelStreamHandler } from './streaming.js';
+import { modelError } from './retry.js';
 
 interface OpenAIChatResponse {
   id?: string;
@@ -70,5 +71,4 @@ function toOpenAIMessages(request: ModelRequest): Array<Record<string, unknown>>
 function normalizeUsage(usage: OpenAIChatResponse['usage']): Usage | undefined { return usage ? { inputTokens: usage.prompt_tokens, outputTokens: usage.completion_tokens, totalTokens: usage.total_tokens } : undefined; }
 function normalizeStopReason(finishReason: string | null | undefined, toolCallCount: number): AssistantTurn['stopReason'] { if (toolCallCount > 0 || finishReason === 'tool_calls') return 'tool_calls'; if (finishReason === 'length') return 'length'; if (finishReason === 'content_filter') return 'content_filter'; if (!finishReason || finishReason === 'stop') return 'end_turn'; return 'error'; }
 function headers(apiKey: string): Record<string, string> { return { authorization: `Bearer ${apiKey}`, 'content-type': 'application/json' }; }
-function modelError(response: Response): Error { return new Error(`Model request failed: HTTP ${response.status} ${response.statusText}`); }
 function trimTrailingSlash(value: string): string { return value.replace(/\/+$/, ''); }
