@@ -1,6 +1,6 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { resolveWorkspacePath } from '../tools/path-guard.js';
+import { isSensitiveRelativePath, resolveWorkspacePath } from '../tools/path-guard.js';
 import { redact } from '../shared/redact.js';
 
 const MAX_ATTACHMENT_CHARS = 20_000;
@@ -14,6 +14,7 @@ export async function expandPromptAttachments(prompt: string, workspaceRoot: str
   const attachments: PromptAttachment[] = [];
   for (const requestedPath of [...new Set(references)]) {
     const resolved = await resolveWorkspacePath(workspaceRoot, requestedPath);
+    if (isSensitiveRelativePath(resolved.relativePath)) throw Object.assign(new Error(`Attachment path is protected: ${resolved.relativePath}`), { code: 'sensitive_path' });
     const buffer = await fs.readFile(resolved.absolutePath);
     if (buffer.includes(0)) throw Object.assign(new Error(`Attachment is binary: ${requestedPath}`), { code: 'binary_file' });
     const decoded = buffer.toString('utf8');

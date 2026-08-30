@@ -2,6 +2,18 @@ import type { AgentMessage } from '../agent/types.js';
 
 export type JsonSchema = Record<string, unknown>;
 export type ToolRisk = 'read' | 'write' | 'shell' | 'external';
+export type OperationClass = 'read' | 'mutating' | 'shell' | 'external';
+export type RiskLevel = 'low' | 'medium' | 'high' | 'blocked';
+export type PolicyAction = 'allow' | 'ask' | 'deny';
+
+export interface PolicyDecision {
+  action: PolicyAction;
+  operationClass: OperationClass;
+  risk: RiskLevel;
+  reason: string;
+  ruleId: string;
+  approvalScope?: 'once' | 'session';
+}
 
 export interface ToolDefinitionForModel {
   type: 'function';
@@ -29,7 +41,10 @@ export interface ToolContext {
   signal?: AbortSignal;
   permissionMode?: PermissionMode;
   previewLines?: number;
-  approve?: (tool: ToolDefinition) => Promise<boolean>;
+  toolCallId?: string;
+  approve?: (tool: ToolDefinition, decision?: PolicyDecision, args?: unknown) => Promise<boolean>;
+  onPolicyDecision?: (decision: PolicyDecision & { toolName: string; elapsedMs: number; args?: Record<string, unknown> }) => Promise<void> | void;
+  onFileMutation?: (mutation: { toolCallId: string; operation: 'create' | 'modify' | 'delete'; relativePath: string; beforeText?: string; afterText?: string; beforeHash?: string; afterHash?: string; preview?: string }) => Promise<void> | void;
 }
 
 export type ToolHandler<TArgs = unknown> = (args: TArgs, ctx: ToolContext) => Promise<unknown> | unknown;
@@ -45,6 +60,7 @@ export interface ToolResult {
   truncated?: boolean;
   artifactPath?: string;
   elapsedMs: number;
+  policyDecision?: PolicyDecision;
 }
 
 export interface ToolError {

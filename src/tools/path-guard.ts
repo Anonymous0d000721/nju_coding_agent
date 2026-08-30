@@ -27,16 +27,21 @@ export async function resolveWorkspacePath(workspaceRoot: string, inputPath = '.
 }
 
 export function assertSafeWritePath(relativePath: string): void {
-  const normalized = normalizeRelative(relativePath);
-  if (normalized === '.git' || normalized.startsWith('.git/')) {
-    throw Object.assign(new Error('Writing inside .git is not allowed'), { code: 'sensitive_path' });
+  if (isSensitiveRelativePath(relativePath)) {
+    throw Object.assign(new Error('Writing a protected path is not allowed'), { code: 'sensitive_path' });
   }
-  if (normalized === '.env' || normalized.startsWith('.env.') || normalized.includes('/.env')) {
-    throw Object.assign(new Error('Writing secret-bearing env files is not allowed'), { code: 'sensitive_path' });
-  }
-  if (normalized === '.nju-agent' || normalized.startsWith('.nju-agent/')) {
-    throw Object.assign(new Error('Writing agent runtime state through file tools is not allowed'), { code: 'sensitive_path' });
-  }
+}
+
+export function isSensitiveRelativePath(relativePath: string): boolean {
+  const normalized = normalizeRelative(relativePath).replace(/^\.\//, '').toLowerCase();
+  const segments = normalized.split('/').filter(Boolean);
+  if (segments.includes('.git') || segments.includes('.nju-agent') || segments.includes('node_modules')) return true;
+  return segments.some((segment) => {
+    if (segment === '.env.example') return false;
+    if (segment === '.env' || segment.startsWith('.env.')) return true;
+    if (segment.endsWith('.pem') || segment.endsWith('.key') || segment.endsWith('.p12') || segment.endsWith('.pfx')) return true;
+    return ['id_rsa', 'id_ed25519', 'id_ecdsa', 'credentials', 'credential', 'token', 'tokens', 'secret', 'secrets'].includes(segment);
+  });
 }
 
 export function normalizeRelative(relativePath: string): string {

@@ -2,7 +2,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import type { ToolDefinition, ToolContext } from './types.js';
-import { assertSafeWritePath, normalizeRelative, resolveWorkspacePath } from './path-guard.js';
+import { assertSafeWritePath, isSensitiveRelativePath, normalizeRelative, resolveWorkspacePath } from './path-guard.js';
 
 const MAX_READ_LINES = 400;
 const MAX_LIST_ENTRIES = 300;
@@ -33,6 +33,7 @@ function listFilesTool(): ToolDefinition {
       await walk(resolved.absolutePath, depth, includeHidden, async (absolute, dirent) => {
         if (entries.length >= MAX_LIST_ENTRIES) return;
         const rel = normalizeRelative(path.relative(ctx.workspaceRoot, absolute));
+        if (isSensitiveRelativePath(rel)) return;
         entries.push(`${dirent.isDirectory() ? 'dir ' : 'file'} ${rel}`);
       });
       return { path: resolved.relativePath, entries, truncated: entries.length >= MAX_LIST_ENTRIES };
@@ -101,8 +102,28 @@ function writeFileTool(): ToolDefinition {
       assertSafeWritePath(resolved.relativePath);
       if (input.createDirectories === true) await fs.mkdir(path.dirname(resolved.absolutePath), { recursive: true });
       const content = asString(input.content);
-      await withFileLock(resolved.absolutePath, () => atomicWrite(resolved.absolutePath, content));
-      return { path: resolved.relativePath, bytes: Buffer.byteLength(content, 'utf8'), fileHash: fileHash(content) };
+      return withFileLock(resolved.absolutePath, async () => {
+        let beforeText: string | undefined;
+        try {
+          const before = await fs.readFile(resolved.absolutePath);
+          rejectBinary(before);
+          beforeText = before.toString('utf8');
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+        }
+        await atomicWrite(resolved.absolutePath, content);
+        await ctx.onFileMutation?.({
+          toolCallId: ctx.toolCallId ?? 'unknown',
+          operation: beforeText === undefined ? 'create' : 'modify',
+          relativePath: resolved.relativePath,
+          beforeText,
+          afterText: content,
+          beforeHash: beforeText === undefined ? undefined : fileHash(beforeText),
+          afterHash: fileHash(content),
+          preview: beforeText === undefined ? `+ ${content}` : `- ${beforeText}\n+ ${content}`,
+        });
+        return { path: resolved.relativePath, bytes: Buffer.byteLength(content, 'utf8'), fileHash: fileHash(content) };
+      });
     },
   };
 }
@@ -147,6 +168,17 @@ function hashlineEditTool(): ToolDefinition {
         }
         const nextText = serializeText(next, document.newlineStyle, document.trailingNewline);
         await atomicWrite(resolved.absolutePath, nextText);
+        const preview = diffPreview(document.lines, next);
+        await ctx.onFileMutation?.({
+          toolCallId: ctx.toolCallId ?? 'unknown',
+          operation: 'modify',
+          relativePath: resolved.relativePath,
+          beforeText: original,
+          afterText: nextText,
+          beforeHash: fileHash(original),
+          afterHash: fileHash(nextText),
+          preview,
+        });
         const changed = changedAnchors(next, ranges);
         return {
           path: resolved.relativePath,
@@ -177,6 +209,7 @@ function globFilesTool(): ToolDefinition {
       await walk(base.absolutePath, 32, false, async (absolute, dirent) => {
         if (matches.length >= MAX_SEARCH_RESULTS || !dirent.isFile()) return;
         const rel = normalizeRelative(path.relative(ctx.workspaceRoot, absolute));
+        if (isSensitiveRelativePath(rel)) return;
         if (regex.test(rel)) matches.push(rel);
       });
       return { matches, truncated: matches.length >= MAX_SEARCH_RESULTS };
@@ -200,6 +233,7 @@ function grepFilesTool(): ToolDefinition {
       await walk(base.absolutePath, 32, false, async (absolute, dirent) => {
         if (matches.length >= MAX_SEARCH_RESULTS || !dirent.isFile()) return;
         const rel = normalizeRelative(path.relative(ctx.workspaceRoot, absolute));
+        if (isSensitiveRelativePath(rel)) return;
         if (glob && !glob.test(rel)) return;
         const buffer = await fs.readFile(absolute);
         if (isBinary(buffer)) return;
@@ -218,7 +252,7 @@ async function walk(root: string, depth: number, includeHidden: boolean, visit: 
   try { dirents = await fs.readdir(root, { withFileTypes: true }); } catch { return; }
   for (const dirent of dirents) {
     if (!includeHidden && dirent.name.startsWith('.')) continue;
-    if (dirent.name === 'node_modules' || dirent.name === 'refs') continue;
+    if (dirent.name === 'node_modules' || isSensitiveRelativePath(dirent.name)) continue;
     const absolute = path.join(root, dirent.name);
     await visit(absolute, dirent);
     if (dirent.isDirectory()) await walk(absolute, depth - 1, includeHidden, visit);
