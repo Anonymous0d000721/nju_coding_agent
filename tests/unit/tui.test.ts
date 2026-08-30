@@ -2,10 +2,11 @@ import { mkdtemp } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { applyAgentEvent, editorLinesWithCursor, ensureNamedSession, fileReferenceToken, findFileCompletions, formatStatusBar, isMarkdownTableSeparator, isMarkdownTableRow, messagePresentation, parseMarkdownTableRow, replaceFileReference, sessionEntriesToTuiMessages, toggleLastToolDetails, transcriptPageSize, transcriptWindow, type TuiMessage } from '../../src/app/tui.js';
+import { applyAgentEvent, editorLinesWithCursor, ensureNamedSession, fileReferenceToken, findFileCompletions, formatRunStatus, formatStatusBar, isMarkdownTableSeparator, isMarkdownTableRow, messagePresentation, parseMarkdownTableRow, replaceFileReference, sessionEntriesToTuiMessages, toggleLastToolDetails, transcriptPageSize, transcriptWindow, type TuiMessage } from '../../src/app/tui.js';
 import { createEditorState } from '../../src/app/editor-state.js';
 import type { SessionEntry } from '../../src/session/session-types.js';
 import type { AgentStreamEvent } from '../../src/agent/types.js';
+import { createIdleRunStatus, type RunStatus } from '../../src/telemetry/report.js';
 import { JsonlSessionStore } from '../../src/session/jsonl-store.js';
 
 const base: TuiMessage[] = [{ role: 'system', text: 'ready' }];
@@ -72,6 +73,36 @@ describe('TUI event rendering', () => {
     expect(text).not.toContain('permission ');
     expect(text).not.toContain('reasoning ');
     expect(text).not.toContain('session ');
+  });
+
+  it('formats a fresh idle status with current configuration and not-started reason', () => {
+    const text = formatRunStatus(createIdleRunStatus({ workspace: 'D:/workspace', sessionId: undefined, model: 'deepseek-v4-flash', effort: 'medium', permissionMode: 'yolo' }));
+
+    expect(text).toContain('run: idle');
+    expect(text).toContain('workspace: D:/workspace');
+    expect(text).toContain('model: deepseek-v4-flash');
+    expect(text).toContain('effort: medium');
+    expect(text).toContain('permission: yolo');
+    expect(text).toContain('turns: 0 · tool calls: 0 (0 ok, 0 failed)');
+    expect(text).toContain('stop reason: (not started)');
+  });
+
+  it('formats structured run evidence without losing command and error details', () => {
+    const status: RunStatus = {
+      runId: 'run-1', workspace: 'D:/workspace', sessionId: 'session-1', state: 'completed', model: 'gpt-5', effort: 'medium', permissionMode: 'yolo',
+      turns: 2, toolCalls: 2, tools: [], policyDecisions: 1, toolSuccesses: 1, toolFailures: 1,
+      verification: { plan: { requirements: [{ kind: 'test' }], invalidateOnMutation: true }, evidence: [], status: 'failed' },
+      commands: [{ command: 'npm test', exitCode: 1, stderrTail: 'one test failed' }], filesChanged: ['src/app.ts'], compactions: 1, lastCompactionReason: 'threshold', stopReason: 'model_finished', warnings: ['retrying'], errors: ['read_file: permission_denied'],
+    };
+    const text = formatRunStatus(status);
+
+    expect(text).toContain('run: completed');
+    expect(text).toContain('verification: failed');
+    expect(text).toContain('last command: npm test · exit 1');
+    expect(text).toContain('stderr: one test failed');
+    expect(text).toContain('changed files: src/app.ts');
+    expect(text).toContain('warnings: retrying');
+    expect(text).toContain('errors: read_file: permission_denied');
   });
 
   it('toggles the latest tool details without changing other messages', () => {

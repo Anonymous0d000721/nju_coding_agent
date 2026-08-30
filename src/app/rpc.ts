@@ -5,6 +5,8 @@ import { JsonlSessionStore, sessionName } from '../session/jsonl-store.js';
 import type { AgentConfig } from '../shared/config.js';
 import type { AgentRunControl, AgentStreamEvent } from '../agent/types.js';
 import type { AppResult } from './app.js';
+import { ChangeJournal } from '../telemetry/journal.js';
+import { createIdleRunStatus, createRunningRunStatus, type RunStatus, type RunStatusContext } from '../telemetry/report.js';
 
 interface RpcRequest {
   jsonrpc?: string;
@@ -34,11 +36,16 @@ interface RpcDeps {
   compactSession: (config: AgentConfig, sessionId: string) => Promise<{ compacted: boolean; omittedMessages: number; outputChars: number }>;
 }
 
+function statusContext(config: AgentConfig, sessionId?: string): RunStatusContext {
+  return { workspace: config.workspaceRoot, sessionId, model: config.model.model, effort: config.model.thinking.level, permissionMode: config.permissionMode };
+}
+
 export async function runRpc(deps: RpcDeps): Promise<AppResult> {
   const write = (value: unknown): void => { deps.stdout.write(`${JSON.stringify(value)}\n`); };
   const store = new JsonlSessionStore(`${deps.config.workspaceRoot}/.nju-agent`);
   let sessionId = deps.config.session.id;
-  let activeRun: { runId: string; controller: AbortController; control: AgentRunControl; done: Promise<void> } | undefined;
+  let activeRun: { runId: string; controller: AbortController; control: AgentRunControl; done: Promise<void>; status: RunStatus } | undefined;
+  let latestStatus: RunStatus | undefined;
   let shuttingDown = false;
 
   const error = (id: RpcRequest['id'], code: number, message: string, data?: unknown): void => {
@@ -64,6 +71,7 @@ export async function runRpc(deps: RpcDeps): Promise<AppResult> {
         case 'session/new': {
           const session = await store.create({ cwd: deps.config.workspaceRoot, model: deps.config.model.model, appVersion: '0.1.0' });
           sessionId = session.id;
+          latestStatus = undefined;
           reply({ sessionId });
           event('session_updated', { sessionId, action: 'created' });
           return;
@@ -72,13 +80,18 @@ export async function runRpc(deps: RpcDeps): Promise<AppResult> {
           const requested = stringParam(params, 'sessionId');
           const session = await store.open(requested);
           sessionId = session.id;
+          latestStatus = undefined;
           reply({ sessionId, name: sessionName(session.entries), entries: session.entries.length });
           event('session_updated', { sessionId, action: 'resumed' });
           return;
         }
         case 'session/state':
-          reply({ sessionId, runId: activeRun?.runId, running: Boolean(activeRun) });
+          reply({ sessionId, runId: activeRun?.runId, running: Boolean(activeRun), status: activeRun?.status ?? latestStatus });
           return;
+        case 'status': {
+          reply(activeRun?.status ?? latestStatus ?? createIdleRunStatus(statusContext(deps.config, sessionId)));
+          return;
+        }
         case 'prompt': {
           const text = stringParam(params, 'text');
           if (!deps.config.model.apiKey) { error(request.id, -32003, 'Missing API key. Set NJU_AGENT_API_KEY, NJU_AGENT_BASE_URL, and NJU_AGENT_MODEL. See .env.example.'); return; }
@@ -91,16 +104,25 @@ export async function runRpc(deps: RpcDeps): Promise<AppResult> {
           const selectedSession = typeof params.sessionId === 'string' ? params.sessionId : sessionId;
           if (selectedSession) sessionId = selectedSession;
           reply({ accepted: true, runId, sessionId });
-          event('run_start', { sessionId }, runId);
+          const runningStatus = createRunningRunStatus(runId, statusContext(deps.config, sessionId));
+          activeRun = { runId, controller, control, done: Promise.resolve(), status: runningStatus };
+          event('run_start', { sessionId, status: runningStatus }, runId);
           const done = deps.runPrompt(deps.config, text, sessionId, 'text', deps.config.model.thinking, undefined, false, async (streamEvent) => emitAgentEvent(event, streamEvent, runId), controller.signal, undefined, false, control)
             .then((result) => {
               if (result.sessionId) sessionId = result.sessionId;
-              event('message_end', { sessionId, stdout: result.stdout, stderr: result.stderr }, runId);
-              event('run_end', { sessionId, exitCode: result.exitCode, stdout: result.stdout, stderr: result.stderr }, runId);
+              const status = result.status ?? { ...createRunningRunStatus(runId, statusContext(deps.config, sessionId)), state: result.exitCode === 0 ? 'completed' as const : 'failed' as const };
+              latestStatus = { ...status, sessionId };
+              if (activeRun?.runId === runId) activeRun.status = latestStatus;
+              event('message_end', { sessionId, stdout: result.stdout, stderr: result.stderr, status: latestStatus }, runId);
+              event('run_end', { sessionId, exitCode: result.exitCode, stdout: result.stdout, stderr: result.stderr, status: latestStatus }, runId);
             })
-            .catch((runError) => event('error', { code: 'run_error', message: messageOf(runError) }, runId))
+            .catch((runError) => {
+              latestStatus = { ...runningStatus, state: 'failed', stopReason: 'fatal_error', errors: [messageOf(runError)] };
+              if (activeRun?.runId === runId) activeRun.status = latestStatus;
+              event('error', { code: 'run_error', message: messageOf(runError), status: latestStatus }, runId);
+            })
             .finally(() => { if (activeRun?.runId === runId) activeRun = undefined; });
-          activeRun = { runId, controller, control, done };
+          if (activeRun?.runId === runId) activeRun.done = done;
           return;
         }
         case 'cancel': {
@@ -114,10 +136,16 @@ export async function runRpc(deps: RpcDeps): Promise<AppResult> {
           if (command === '/compact') {
             if (!sessionId) throw rpcError(-32001, 'No active session');
             reply(await deps.compactSession(deps.config, sessionId));
+          } else if (command === '/diff') {
+            reply({ text: await new ChangeJournal(deps.config.workspaceRoot).formatDiff(sessionId ? { sessionId } : {}) });
+          } else if (command === '/undo') {
+            reply(await new ChangeJournal(deps.config.workspaceRoot).undoLast(sessionId ? { sessionId } : {}));
+          } else if (command === '/status') {
+            reply(activeRun?.status ?? latestStatus ?? createIdleRunStatus(statusContext(deps.config, sessionId)));
           } else if (command === '/session') {
             reply({ sessionId, runId: activeRun?.runId, running: Boolean(activeRun) });
           } else if (command === '/help') {
-            reply({ commands: ['/compact', '/session', '/help'] });
+            reply({ commands: ['/compact', '/status', '/session', '/diff', '/undo', '/help'] });
           } else {
             throw rpcError(-32602, `Unsupported slash command: ${command}`);
           }

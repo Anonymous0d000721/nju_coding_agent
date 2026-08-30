@@ -1,6 +1,10 @@
 import { PassThrough } from 'node:stream';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { runRpc } from '../../src/app/rpc.js';
+import { createRunReport, writeRunReport } from '../../src/telemetry/report.js';
 import type { AgentConfig } from '../../src/shared/config.js';
 import type { AgentStreamEvent } from '../../src/agent/types.js';
 
@@ -24,6 +28,28 @@ function lines(output: PassThrough): Record<string, unknown>[] {
 async function tick(): Promise<void> { await new Promise((resolve) => setTimeout(resolve, 100)); }
 
 describe('JSON-RPC mode', () => {
+  it('reports current idle configuration instead of a historical report before the first prompt', async () => {
+    const rootDir = await fs.mkdtemp(path.join(os.tmpdir(), 'nju-rpc-status-'));
+    await writeRunReport(rootDir, createRunReport('old-run', 'previous prompt', { stopReason: 'model_finished', turns: 14, toolCalls: 24, messages: [] }));
+    const input = new PassThrough();
+    const output = new PassThrough();
+    const rpc = runRpc({
+      config: config(rootDir), stdin: input, stdout: output,
+      runPrompt: async () => ({ exitCode: 0 }),
+      compactSession: async () => ({ compacted: false, omittedMessages: 0, outputChars: 0 }),
+    });
+
+    input.write('{"jsonrpc":"2.0","id":"s","method":"status"}\n');
+    await tick();
+    const statusMessage = lines(output)[0];
+    const status = statusMessage.result as { state: string; workspace: string; model: string; effort: string; permissionMode: string; turns: number; toolCalls: number; stopReason?: string };
+    expect(status).toMatchObject({ state: 'idle', workspace: rootDir, model: 'test-model', effort: 'medium', permissionMode: 'yolo', turns: 0, toolCalls: 0 });
+    expect(status.stopReason).toBeUndefined();
+
+    input.write('{"jsonrpc":"2.0","id":"q","method":"shutdown"}\n');
+    await rpc;
+  });
+
   it('handles initialize, session creation, state, and shutdown over JSONL', async () => {
     const input = new PassThrough();
     const output = new PassThrough();

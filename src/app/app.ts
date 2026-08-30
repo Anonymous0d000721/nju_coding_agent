@@ -16,7 +16,7 @@ import { runTui } from './tui.js';
 import { loadConfig } from '../shared/config.js';
 import { redact } from '../shared/redact.js';
 import { JsonlSessionStore } from '../session/jsonl-store.js';
-import { createMessageEntry, createRunEndEntry, createRunStartEntry, createSummaryEntry, createThinkingLevelChangeEntry } from '../session/entries.js';
+import { createFileMutationEntry, createMessageEntry, createRunEndEntry, createRunStartEntry, createSummaryEntry, createThinkingLevelChangeEntry } from '../session/entries.js';
 import { loadProjectInstructions } from '../context/instructions.js';
 import { createNativeContribution, HarnessPluginHost, renderContributions } from '../context/harness.js';
 import { MemoryPlugin } from '../context/memory.js';
@@ -25,7 +25,9 @@ import { expandPromptAttachments } from '../context/attachments.js';
 import { SkillRegistry } from '../context/skills.js';
 import { createTodoTools } from '../plan/todo-tools.js';
 import { TelemetryStore } from '../telemetry/store.js';
-import { createRunReport, writeRunReport } from '../telemetry/report.js';
+import { ChangeJournal } from '../telemetry/journal.js';
+import { createRunReport, createRunStatus, writeRunReport, type RunStatus } from '../telemetry/report.js';
+import { withRetryingModelClient } from '../model/retry.js';
 import { McpManager } from '../mcp/client.js';
 import { createStdioTransport } from '../mcp/stdio.js';
 import { registerMcpTools } from '../mcp/registry-adapter.js';
@@ -46,7 +48,7 @@ export interface AppServices {
   stdout?: NodeJS.WritableStream;
 }
 
-export interface AppResult { exitCode: number; stdout?: string; stderr?: string; sessionId?: string; }
+export interface AppResult { exitCode: number; stdout?: string; stderr?: string; sessionId?: string; status?: RunStatus; }
 
 export function createApp(services: AppServices) {
   return {
@@ -93,7 +95,7 @@ export async function runPrompt(config: AgentConfig, prompt: string, sessionId?:
   hooks.register({
     beforeModelRequest: async ({ turn }) => { await telemetry.append({ type: 'model_request_start', runId, data: { turn } }); },
     beforeTool: async ({ turn, toolCall }) => { await telemetry.append({ type: 'tool_call_start', runId, data: { turn, toolName: toolCall?.name } }); },
-    afterTool: async ({ turn, toolResult }) => { await telemetry.append({ type: 'tool_result', runId, data: { turn, toolName: toolResult?.toolName, ok: toolResult?.ok, elapsedMs: toolResult?.elapsedMs, truncated: toolResult?.truncated } }); },
+    afterTool: async ({ turn, toolResult }) => { await telemetry.append({ type: 'tool_result', runId, data: { turn, toolName: toolResult?.toolName, ok: toolResult?.ok, elapsedMs: toolResult?.elapsedMs, truncated: toolResult?.truncated, errorCode: toolResult?.error?.code, policy: toolResult?.policyDecision } }); },
     afterTurn: async ({ turn }) => { await telemetry.append({ type: 'turn_end', runId, data: { turn } }); },
     onStop: async ({ result }) => { await telemetry.append({ type: 'runner_stop', runId, data: { stopReason: result.stopReason, turns: result.turns, toolCalls: result.toolCalls } }); },
   });
@@ -132,8 +134,15 @@ export async function runPrompt(config: AgentConfig, prompt: string, sessionId?:
   const { contributions, diagnostics: contextDiagnostics } = await harness.contributions({ workspaceRoot: config.workspaceRoot, sessionId: session?.id, signal }, nativeContributions);
   for (const diagnostic of contextDiagnostics) await telemetry.append({ type: 'harness_error', sessionId: session?.id, runId, data: { ...diagnostic } });
   const runner = new AgentRunner({
-    model: createModelClient({ apiFormat: config.model.apiFormat, apiKey: config.model.apiKey, baseUrl: config.model.baseUrl, model: config.model.model }),
-    tools: new ToolExecutor(registry, { workspaceRoot: config.workspaceRoot, permissionMode: config.permissionMode, previewLines: config.toolPreviewLines ?? 8, approve: approveTool }),
+    model: withRetryingModelClient(createModelClient({ apiFormat: config.model.apiFormat, apiKey: config.model.apiKey, baseUrl: config.model.baseUrl, model: config.model.model }), {
+      onRetry: async (retry) => { await telemetry.append({ type: 'model_retry', sessionId: session?.id, runId, data: { ...retry } }); },
+    }),
+    tools: new ToolExecutor(registry, { workspaceRoot: config.workspaceRoot, permissionMode: config.permissionMode, previewLines: config.toolPreviewLines ?? 8, approve: approveTool, onPolicyDecision: async (decision) => { await telemetry.append({ type: 'policy_decision', runId, data: { ...decision } }); }, onFileMutation: async (mutation) => {
+      await new ChangeJournal(config.workspaceRoot, runId, session?.id, async (record) => {
+        if (session && sessionStore) await sessionStore.append(session.id, createFileMutationEntry(session.id, record));
+        await telemetry.append({ type: 'file_mutation', sessionId: session?.id, runId, data: { id: record.id, operation: record.operation, relativePath: record.relativePath, beforeHash: record.beforeHash, afterHash: record.afterHash, reversible: record.reversible, artifactPath: record.artifactPath, toolCallId: record.toolCallId, undoOf: record.undoOf } });
+      }).record(mutation);
+    } }),
     systemPrompt: buildSystemPrompt(config.workspaceRoot, { pluginContext: renderContributions(contributions) }),
     toolDefinitions: registry.definitionsForModel(),
     hooks,
@@ -163,17 +172,30 @@ export async function runPrompt(config: AgentConfig, prompt: string, sessionId?:
     if (session && sessionStore) await sessionStore.append(session.id, createRunEndEntry(session.id, result));
     const harnessDiagnostics = await harness.afterRun({ workspaceRoot: config.workspaceRoot, sessionId: session?.id, signal }, result);
     for (const diagnostic of harnessDiagnostics) await telemetry.append({ type: 'harness_error', sessionId: session?.id, runId, data: { ...diagnostic } });
+    const status = createRunStatus(runId, result, {
+      workspace: config.workspaceRoot,
+      sessionId: session?.id,
+      model: config.model.model,
+      effort: thinking.level,
+      permissionMode: config.permissionMode,
+    });
     if (config.telemetry !== 'off') {
-      const report = createRunReport(runId, prompt, result);
+      const report = createRunReport(runId, prompt, result, {
+        workspace: config.workspaceRoot,
+        sessionId: session?.id,
+        model: config.model.model,
+        effort: thinking.level,
+        permissionMode: config.permissionMode,
+      });
       const reportPath = await writeRunReport(`${config.workspaceRoot}/.nju-agent/logs`, report);
       await telemetry.append({ type: 'run_report', sessionId: session?.id, runId, data: { path: reportPath, stopReason: report.stopReason, toolCalls: report.toolCalls } });
     }
     await telemetry.append({ type: 'run_end', sessionId: session?.id, runId, data: { stopReason: result.stopReason, turns: result.turns, toolCalls: result.toolCalls } });
     const rendered = mode === 'json'
-      ? `${JSON.stringify({ type: 'run_end', level: 'info', data: result })}\n`
+      ? `${JSON.stringify({ type: 'run_end', level: 'info', data: { ...result, status } })}\n`
       : renderRunResult(result, !streamedText);
     await mcp.disconnectAll();
-    return { exitCode: 0, stdout: streamedText && rendered ? `\n${rendered}` : rendered, sessionId: session?.id };
+    return { exitCode: 0, stdout: streamedText && rendered ? `\n${rendered}` : rendered, sessionId: session?.id, status };
   } catch (error) {
     await mcp.disconnectAll();
     const message = redact(error instanceof Error ? error.message : String(error), { extraSecrets: [config.model.apiKey] });
