@@ -227,6 +227,4 @@ memory、summary、project instructions、skills、tool output、artifact 和 MC
 
 - `Assignment.md`：要求自行实现 context/session 管理。
 - `specs/03-permission-trust.md`、`specs/04-context-assembly.md`、`specs/05-session-persistence.md`：本项目的 trust、context 与 append-only session 基线。
-- `refs/pi-minimal-doc/source/input-to-llm.md`、`architecture.md`、`compaction-and-branches.md`：Pi 的 context assembly、event layer 和 session/compaction 模型。
-- `refs/pi/packages/coding-agent/docs/skills.md`：catalog-first skill progressive disclosure。
 - 各插件的外部和本机参考材料见 [`plugins/README.md`](plugins/README.md)。

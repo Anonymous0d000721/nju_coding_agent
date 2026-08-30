@@ -9,10 +9,6 @@ Session store 的作用是：支持恢复工作、调试问题、为作业展示
 ## 2. 参考来源
 
 - `Assignment.md`：评委会会关注开发过程和设计理解；可读的本地 session log 有助于说明 agent 行为。
-- `refs/pi-minimal-doc/source/compaction-and-branches.md`：Pi 使用 append-only JSONL session、compaction entry，并预留 branch/fork 元数据。
-- `refs/pi-minimal-doc/source/input-to-llm.md`：user、assistant、tool messages 会积累为 agent context。
-- `refs/pi/packages/agent/docs/harness.md`：Pi harness 设计包含 session persistence 和 recovery 概念。
-- `refs/learn-claude-code/s08_context_compact/README.zh.md`：说明保留历史和压缩模型上下文应分开处理。
 
 ## 3. 存储布局
 

@@ -1,8 +1,6 @@
 # Local Pi agent state
 .pi/
 
-# Local reference checkouts/materials (not part of nju-agent source)
-refs/
 
 # Secrets and local configuration
 .env
@@ -77,3 +75,4 @@ task_plan.md
 findings.md
 progress.md
 demo-script.md
+Plan.md

@@ -11,11 +11,6 @@ Telemetry 用于调试、评估和演示，不是远程 analytics 系统。
 ## 2. 参考来源
 
 - `Assignment.md`：面试会关注是否理解 agent 为什么这样运转；本地 telemetry 可以提供具体证据。
-- `refs/pi-minimal-doc/source/architecture.md`：Pi 使用 `agent_start`、`turn_start/end`、`tool_call_start`、`tool_result`、`compaction_start/end` 等事件。
-- `refs/pi-minimal-doc/source/input-to-llm.md`：展示模型请求、工具执行、tool result 回填、turn events 和 follow-up 处理链路。
-- `refs/pi-minimal-doc/source/compaction-and-branches.md`：compaction events 带有 reason 和 retry 信息。
-- `refs/pi-minimal-doc/source/trust-and-auth.md`：凭据和 trust 决策必须处理，但不能泄露敏感数据。
-- `refs/pi/packages/coding-agent/docs/json.md`：Pi 的 JSON mode 将 agent 运行事件作为 JSONL 输出，适合脚本和测试消费。
 - `specs/07-cli-ux.md`：`--mode json` 复用本规范的 run event schema。
 
 ## 3. 原则

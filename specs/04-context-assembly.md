@@ -9,12 +9,6 @@
 ## 2. 参考来源
 
 - `Assignment.md`：对话历史与上下文管理必须由我们自行实现。
-- `refs/pi-minimal-doc/source/input-to-llm.md`：Pi 在进入 agent loop 前处理 slash commands、extension input、skill/template expansion、compaction check 和 message construction。
-- `refs/pi-minimal-doc/source/architecture.md`：Pi 将 resource loading、context construction、tool execution、model runtime 分离。
-- `refs/pi-minimal-doc/source/compaction-and-branches.md`：Pi 保留近期后缀，旧上下文通过 compaction summary 进入模型。
-- `refs/pi/packages/coding-agent/docs/skills.md`：Pi 风格 skill 采用 catalog-first disclosure，需要时再加载全文。
-- `refs/learn-claude-code/s07_skill_loading/README.zh.md`：说明按需加载 skill，避免 prompt 被完整 skill 淹没。
-- `refs/learn-claude-code/s08_context_compact/README.zh.md`：说明应压缩旧历史，而不是直接丢掉关键状态。
 
 ## 3. ContextBuilder 契约
 

@@ -121,4 +121,3 @@ P2 中，当 segment 数或总字符数达到阈值，`/compact --rebase` 可以
 ## 8. 参考
 
 - `pi-blackhole`：`README.md`、`src/hooks/before-compact.ts`、`src/om/ledger/types.ts`。
-- `refs/pi-minimal-doc/source/compaction-and-branches.md`：append-only session 与 compaction projection。

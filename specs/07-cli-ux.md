@@ -9,12 +9,6 @@
 ## 2. 参考来源
 
 - `Assignment.md`：提交物包含可运行 README 和 2 分钟以内演示视频；CLI 必须易运行、易讲解。
-- `refs/pi-minimal-doc/source/cli-to-tui.md`：Pi 从 `cli.ts` 启动，解析参数、解析 `text/json/rpc` mode、处理 project trust、创建 runtime services，再进入对应 mode。
-- `refs/pi-minimal-doc/source/input-to-llm.md`：用户输入先经过 slash commands 和 session prompt handling，再进入 agent loop。
-- `refs/pi-minimal-doc/source/trust-and-auth.md`：非交互模式不弹 trust prompt，project trust 影响项目资源加载。
-- `refs/pi/packages/coding-agent/README.md`：Pi 支持 `--mode json` 输出 JSONL events，支持 `--mode rpc` 做进程集成。
-- `refs/pi/packages/coding-agent/docs/json.md`：JSON event mode 用于机器可读事件流。
-- `refs/pi/packages/coding-agent/docs/rpc.md`：RPC mode 通过 stdin/stdout JSONL 协议做长期子进程集成。
 - Agent Client Protocol：ACP 是面向编辑器/IDE 与 coding agent 的 JSON-RPC 2.0 标准协议，stdio 是优先传输方式之一。
 
 ## 3. 分阶段运行模式

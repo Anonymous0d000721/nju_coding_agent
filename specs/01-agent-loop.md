@@ -9,11 +9,6 @@
 ## 2. 参考来源
 
 - `Assignment.md`：要求对话历史、上下文管理、本地工具执行、模型输出解析、循环终止条件和错误处理均由我们自行实现，不得依赖 agent 框架。
-- `refs/pi-minimal-doc/source/minimal-agent.md`：最小 Agent 循环是“调用 LLM → 检查 tool calls → 执行工具 → 追加 tool results → 继续请求模型”。
-- `refs/pi-minimal-doc/source/input-to-llm.md`：Pi 中 `AgentSession.prompt()` 负责输入预处理，`runAgentLoop()` 负责 LLM/tool 循环。
-- `refs/pi-minimal-doc/source/architecture.md`：强调 agent loop、tool execution、model runtime、UI 的事件化分离。
-- `refs/learn-claude-code/s01_agent_loop/README.zh.md`：说明 tool-calling loop 是 coding agent 的地基。
-- `refs/learn-claude-code/s17_goal_loop/README.zh.md`：说明不能只相信模型说“完成”，需要验证目标是否满足。
 
 ## 3. 范围
 

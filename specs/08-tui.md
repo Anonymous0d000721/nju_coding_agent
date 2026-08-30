@@ -4,18 +4,7 @@
 
 ## 1. 背景与参考结论
 
-本 spec 基于本项目已有 CLI/streaming/session 能力，并参考 `refs/` 中的终端 Agent 设计：
 
-- `refs/pi-minimal-doc/source/cli-to-tui.md`：Pi 将 CLI 入口、模式解析、runtime 工厂、InteractiveMode/TUI 严格分层；interactive 使用 raw mode、备用屏幕、bracketed paste、差分渲染和聚焦组件。
-- `refs/pi/packages/coding-agent/README.md`：Pi 交互界面由启动 header、消息区、editor、footer 组成；`/model`、`/thinking`、`/resume` 打开选择器；非交互模式 `-p`/JSON/RPC 不弹交互 UI。
-- `refs/pi/packages/coding-agent/docs/keybindings.md`：选择器与编辑器有独立键位域；`Enter` 提交/确认、`Esc` 取消或中断、`Ctrl+L` 选模型、`Shift+Tab` 循环 thinking、`Ctrl+T` 折叠 thinking、`Ctrl+O` 折叠工具输出。
-- `refs/pi/packages/coding-agent/docs/tui.md`：UI 组件应只处理渲染与输入，不承担 agent loop；selector/confirm/input 是通用交互原语；overlay/picker 需要明确焦点和生命周期。
-- `refs/pi/packages/coding-agent/src/modes/interactive/components/assistant-message.ts`：assistant 主文本保持无背景、留白克制；thinking 为低对比度斜体 Markdown；只有 tool/activity 使用独立状态块，避免把每条 transcript 都做成同质化卡片。
-- `refs/pi/packages/coding-agent/src/modes/interactive/components/session-selector.ts`：session picker 提供 loading/progress、范围与排序等上下文，并且每条 session 元数据独立于完整 transcript；加载失败不会破坏返回编辑器的能力。
-- `refs/pi/packages/coding-agent/docs/tui.md`：主题必须区分 `userMessageBg`、`toolPendingBg`、`toolSuccessBg`、`toolErrorBg` 等语义色；每行宽度受限且样式逐行 reset。
-- `refs/Claude-Code/src/components/SessionPreview.tsx`：列表先读取轻量 session metadata，预览时异步加载完整记录，并在加载中保持明确的 loading/cancel 状态。
-- `refs/Claude-Code/src/assistant/sessionHistory.ts`：历史以最近页优先的 cursor pagination 获取，成功页按时间顺序追加；失败返回 `null`，调用方保留已加载内容而不是清空 transcript。
-- `refs/Claude-Code/src/components/VirtualMessageList.tsx`：长 transcript 的消息渲染、搜索和输入区定位必须和 editor 状态解耦，避免恢复历史时重新挂载 editor 或丢失草稿。
 
 核心结论：TUI 是交互 harness，不是 agent loop。它只负责输入、选择、状态展示、事件渲染和用户控制；模型调用、工具执行、权限、session 持久化必须继续由 App/Runner/Tool 层负责。
 

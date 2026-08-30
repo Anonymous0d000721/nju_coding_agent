@@ -15,14 +15,6 @@
 ## 2. 参考来源
 
 - `Assignment.md`：API key 等凭据不得进入仓库、README 或视频；本地执行逻辑由我们负责。
-- `refs/pi/README.md`：Pi 没有内置 permission system；默认以启动它的用户和进程权限运行。
-- `refs/pi/packages/coding-agent/docs/security.md`：Pi 没有内置 sandbox；built-in tools 可以读写文件并执行 shell；Project Trust 只是 input-loading guard。
-- `refs/pi/packages/coding-agent/README.md`：Pi 明确说明 “No permission popups”，需要更强边界时应使用 container/sandbox 或 extension 自定义确认流。
-- `refs/pi-minimal-doc/source/trust-and-auth.md`：Pi 在加载项目本地 `.pi`、extensions、skills、packages 前会先做 project trust。
-- `refs/pi-minimal-doc/source/cli-to-tui.md`：project trust 是启动时加载项目资源前的重要边界；非交互模式不应弹出 trust prompt。
-- `refs/learn-claude-code/web/src/lib/constants.ts`：permission gate 可作为后续 strict/confirm 模式的参考，而非本项目 P0 默认行为。
-- `refs/Agent-make-post.md`：allow/deny/confirm 规则引擎可作为 P1/P2 权限策略参考。
-- `refs/sjtu-agent/README_EN.md`：dangerous-tool approval 与 Web/TUI confirmation 属于更完整交互产品能力，可作为后续 UX 参考。
 
 ## 3. 设计结论
 

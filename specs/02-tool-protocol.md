@@ -9,12 +9,6 @@
 ## 2. 参考来源
 
 - `Assignment.md`：文件读写、命令执行、模型输出解析和错误处理均要求自行实现。
-- `refs/pi-minimal-doc/source/minimal-agent.md`：工具调用由宿主执行，结果追加回对话。
-- `refs/pi-minimal-doc/source/input-to-llm.md`：Pi 的 `executeToolCalls()` 是模型请求变成宿主 observation 的边界。
-- `refs/pi-minimal-doc/source/architecture.md`：tool execution protocol 与模型层、UI 层分离。
-- `refs/learn-claude-code/s03_permission/README.zh.md`：工具执行前需要权限检查。
-- `refs/pi/packages/coding-agent/docs/extensions.md`：Pi 风格工具/扩展通过结构化能力注册，而不是在 loop 中堆分支。
-- `refs/hashline-edit/README.md`：本项目对 hashline edit 做法的参考索引，汇总 `pi-hashline-edit`、`opencode-hashline`、`hashline`、`vscode-hashline-edit-tool` 等资料。
 
 ## 3. 工具定义
 
