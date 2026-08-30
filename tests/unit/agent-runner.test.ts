@@ -258,6 +258,22 @@ describe('AgentRunner', () => {
     expect(messages[2]).toMatchObject({ role: 'user', content: [{ type: 'tool_result', tool_use_id: 'call_01' }] });
   });
 
+  it('warns and stops when a model repeats the same tool call without changing strategy', async () => {
+    const repeated = Array.from({ length: 4 }, (_, index) => assistant({ toolCalls: [{ id: `repeat-${index}`, name: 'echo', argumentsJson: '{"value":"same"}' }] }));
+    const result = await createRunner(new FakeModel([...repeated, assistant({ text: 'I cannot make progress.' })])).run('keep trying', {});
+    expect(result.stopReason).toBe('model_finished');
+    expect(result.convergence).toMatchObject({ status: 'finalized', repeatCount: 4 });
+    expect(result.messages.some((message) => message.content.includes('Host convergence warning'))).toBe(true);
+    expect(result.toolResults?.some((item) => item.error?.code === 'convergence_warning')).toBe(true);
+  });
+
+  it('returns convergence_stopped when the model requests tools after no-tool finalization', async () => {
+    const repeated = Array.from({ length: 5 }, (_, index) => assistant({ toolCalls: [{ id: `stop-${index}`, name: 'echo', argumentsJson: '{"value":"same"}' }] }));
+    const result = await createRunner(new FakeModel([...repeated, assistant({ toolCalls: [{ id: 'after-stop', name: 'echo', argumentsJson: '{"value":"same"}' }] })])).run('keep trying', {});
+    expect(result.stopReason).toBe('convergence_stopped');
+    expect(result.toolResults?.at(-1)?.error?.code).toBe('convergence_stopped');
+  });
+
   it('converts unknown tools into paired tool result messages', async () => {
     const runner = createRunner(new FakeModel([
       assistant({ toolCalls: [{ id: 'tc1', name: 'missing_tool', argumentsJson: '{}' }] }),

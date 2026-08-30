@@ -31,7 +31,7 @@ export interface AssistantTurn {
   raw?: unknown;
 }
 
-export type StopReason = 'completed' | 'model_finished' | 'user_cancelled' | 'budget_exhausted' | 'context_overflow' | 'fatal_error';
+export type StopReason = 'completed' | 'model_finished' | 'user_cancelled' | 'budget_exhausted' | 'context_overflow' | 'convergence_stopped' | 'fatal_error';
 
 export interface AgentRunControl {
   queue(message: string): void;
@@ -56,4 +56,50 @@ export interface AgentRunOptions {
   control?: AgentRunControl;
 }
 
-export interface AgentRunResult { stopReason: StopReason; messages: AgentMessage[]; turns: number; toolCalls: number; }
+export type VerificationKind = 'test' | 'typecheck' | 'build' | 'lint' | 'static_check' | 'git_diff' | 'custom';
+export type VerificationStatus = 'passed' | 'failed' | 'not_run' | 'stale';
+
+export interface VerificationEvidence {
+  id: string;
+  kind: VerificationKind;
+  command?: string;
+  cwd?: string;
+  status: VerificationStatus;
+  exitCode?: number | null;
+  startedAt: string;
+  elapsedMs: number;
+  sourceToolCallId: string;
+  summary: string;
+}
+
+export interface VerificationRequirement {
+  kind: VerificationKind;
+  commandPattern?: string;
+}
+
+export interface VerificationPlan {
+  requirements: VerificationRequirement[];
+  invalidateOnMutation: boolean;
+}
+
+export type VerificationOverallStatus = 'verified' | 'failed' | 'unverified' | 'stale' | 'not_required';
+
+export interface VerificationSummary {
+  plan: VerificationPlan;
+  evidence: VerificationEvidence[];
+  status: VerificationOverallStatus;
+}
+
+export interface AgentRunResult {
+  stopReason: StopReason;
+  messages: AgentMessage[];
+  turns: number;
+  toolCalls: number;
+  toolResults?: ToolResult[];
+  verification?: VerificationSummary;
+  convergence?: import('./convergence.js').ConvergenceSummary;
+  compactions?: number;
+  lastCompactionReason?: 'threshold' | 'overflow' | 'manual';
+  warnings?: string[];
+  errors?: string[];
+}
