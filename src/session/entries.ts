@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { AgentMessage, AgentRunResult } from '../agent/types.js';
-import type { MessageEntry, RunEndEntry, RunStartEntry, SessionNameEntry, SummaryEntry, ThinkingLevelChangeEntry } from './session-types.js';
+import type { FileMutationRecord } from '../telemetry/journal.js';
+import type { FileMutationEntry, MessageEntry, RunEndEntry, RunStartEntry, SessionNameEntry, SummaryEntry, ThinkingLevelChangeEntry } from './session-types.js';
 
 export function createMessageEntry(sessionId: string, message: AgentMessage): MessageEntry {
   return { type: 'message', id: randomUUID(), sessionId, timestamp: new Date().toISOString(), schemaVersion: 1, message };
@@ -16,6 +17,10 @@ export function createThinkingLevelChangeEntry(sessionId: string, thinkingLevel:
 
 export function createSessionNameEntry(sessionId: string, name: string): SessionNameEntry {
   return { type: 'session_name', id: randomUUID(), sessionId, timestamp: new Date().toISOString(), schemaVersion: 1, name };
+}
+
+export function createFileMutationEntry(sessionId: string, mutation: FileMutationRecord): FileMutationEntry {
+  return { type: 'file_mutation', id: randomUUID(), sessionId, timestamp: new Date().toISOString(), schemaVersion: 1, mutation: { ...mutation } };
 }
 
 export function createSummaryEntry(sessionId: string, summary: string, coveredEntryIds: string[] = [], reason: SummaryEntry['reason'] = 'threshold', details: Pick<SummaryEntry, 'algorithm' | 'firstKeptEntryId' | 'stats' | 'supersedesEntryIds'> = {}): SummaryEntry {

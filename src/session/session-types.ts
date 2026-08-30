@@ -48,6 +48,25 @@ export interface SessionNameEntry extends BaseSessionEntry {
   name: string;
 }
 
+export interface FileMutationEntry extends BaseSessionEntry {
+  type: 'file_mutation';
+  mutation: {
+    id: string;
+    runId: string;
+    sessionId?: string;
+    toolCallId: string;
+    operation: 'create' | 'modify' | 'delete';
+    relativePath: string;
+    beforeHash?: string;
+    afterHash?: string;
+    preview?: string;
+    reversible: boolean;
+    artifactPath?: string;
+    createdAt: string;
+    undoOf?: string;
+  };
+}
+
 export interface SummaryEntry extends BaseSessionEntry {
   type: 'summary';
   summary: string;
@@ -59,7 +78,7 @@ export interface SummaryEntry extends BaseSessionEntry {
   supersedesEntryIds?: string[];
 }
 
-export type SessionEntry = SessionStartEntry | MessageEntry | RunStartEntry | RunEndEntry | ThinkingLevelChangeEntry | SessionNameEntry | SummaryEntry;
+export type SessionEntry = SessionStartEntry | MessageEntry | RunStartEntry | RunEndEntry | ThinkingLevelChangeEntry | SessionNameEntry | FileMutationEntry | SummaryEntry;
 
 export interface AgentSession { id: string; path: string; entries: SessionEntry[]; }
 export interface SessionDisplayPage {
