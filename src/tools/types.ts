@@ -54,6 +54,7 @@ export interface ToolContext {
   permissionMode?: PermissionMode;
   previewLines?: number;
   approvalTimeoutMs?: number;
+  maxConcurrency?: number;
   toolCallId?: string;
   approve?: ToolApprovalHandler;
   onApproval?: (request: ApprovalRequest, record: ApprovalRecord) => Promise<void> | void;

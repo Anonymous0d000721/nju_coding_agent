@@ -43,7 +43,8 @@ export interface AgentRunControl {
 export interface AgentRunProgress {
   runId?: string;
   sessionId?: string;
-  phase: 'model_request' | 'tool_start' | 'tool_result' | 'compaction' | 'turn_end';
+  phase: 'model_request' | 'tool_start' | 'tool_result' | 'compaction' | 'turn_end' | 'stop';
+  elapsedMs?: number;
   turn: number;
   toolCalls: number;
   toolResults: ToolResult[];
@@ -53,6 +54,7 @@ export interface AgentRunProgress {
   warnings: string[];
   errors: string[];
   currentToolName?: string;
+  budget?: { maxDurationMs?: number; exhausted?: boolean };
 }
 
 export interface AgentRunOptions {
@@ -71,20 +73,25 @@ export interface AgentRunOptions {
   onProgress?: (progress: AgentRunProgress) => void | Promise<void>;
   goalGate?: boolean;
   control?: AgentRunControl;
+  maxConcurrency?: number;
 }
 
 export type VerificationKind = 'test' | 'typecheck' | 'build' | 'lint' | 'static_check' | 'git_diff' | 'custom';
-export type VerificationStatus = 'passed' | 'failed' | 'not_run' | 'stale';
+export type VerificationStatus = 'passed' | 'failed' | 'not_run' | 'stale' | 'blocked';
 
 export interface VerificationEvidence {
   id: string;
   kind: VerificationKind;
   command?: string;
   cwd?: string;
+  targetPath?: string;
   status: VerificationStatus;
   exitCode?: number | null;
   startedAt: string;
+  endedAt?: string;
   elapsedMs: number;
+  stdoutTail?: string;
+  stderrTail?: string;
   sourceToolCallId: string;
   summary: string;
 }
@@ -99,7 +106,7 @@ export interface VerificationPlan {
   invalidateOnMutation: boolean;
 }
 
-export type VerificationOverallStatus = 'verified' | 'failed' | 'unverified' | 'stale' | 'not_required';
+export type VerificationOverallStatus = 'verified' | 'failed' | 'blocked' | 'unverified' | 'stale' | 'not_required';
 
 export interface VerificationSummary {
   plan: VerificationPlan;
@@ -119,4 +126,8 @@ export interface AgentRunResult {
   lastCompactionReason?: 'threshold' | 'overflow' | 'manual';
   warnings?: string[];
   errors?: string[];
+  startedAt?: string;
+  endedAt?: string;
+  elapsedMs?: number;
+  budget?: { maxDurationMs?: number; exhausted?: boolean };
 }

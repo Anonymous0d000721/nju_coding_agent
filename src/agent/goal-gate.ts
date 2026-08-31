@@ -19,22 +19,28 @@ export function verificationPlanForGoal(goal: string): VerificationPlan {
 export function collectVerificationEvidence(results: ToolResult[], previous: VerificationEvidence[] = []): VerificationEvidence[] {
   const evidence = previous.map((item) => ({ ...item }));
   for (const result of results) {
-    if (result.toolName !== 'run_command') continue;
+    if (result.toolName !== 'run_command' && result.toolName !== 'background_command') continue;
     const details = asRecord(result.details);
     const command = typeof details?.command === 'string' ? details.command : undefined;
     const kind = classifyCommand(command);
     const exitCode = typeof details?.exitCode === 'number' || details?.exitCode === null ? details.exitCode : undefined;
+    const blocked = !result.ok && ['permission_denied', 'approval_required', 'approval_timeout', 'user_cancelled', 'run_cancelled'].includes(result.error?.code ?? '');
+    const status = blocked ? 'blocked' as const : result.ok && exitCode === 0 ? 'passed' as const : 'failed' as const;
     evidence.push({
       id: `${result.toolCallId}:${kind}`,
       kind,
       command,
       cwd: typeof details?.cwd === 'string' ? details.cwd : undefined,
-      status: exitCode === 0 ? 'passed' : 'failed',
+      targetPath: typeof details?.targetPath === 'string' ? details.targetPath : undefined,
+      status,
       exitCode,
       startedAt: new Date(Date.now() - result.elapsedMs).toISOString(),
+      endedAt: new Date().toISOString(),
       elapsedMs: result.elapsedMs,
+      stdoutTail: typeof details?.stdout === 'string' ? tail(details.stdout) : undefined,
+      stderrTail: typeof details?.stderr === 'string' ? tail(details.stderr) : undefined,
       sourceToolCallId: result.toolCallId,
-      summary: exitCode === 0 ? `${kind} passed` : `${kind} failed${exitCode === undefined ? '' : ` (exit ${exitCode})`}`,
+      summary: status === 'passed' ? `${kind} passed` : `${kind} ${status}${exitCode === undefined ? '' : ` (exit ${exitCode})`}`,
     });
   }
   return evidence;
@@ -59,7 +65,7 @@ export function summarizeVerification(plan: VerificationPlan, evidence: Verifica
     if (requirement.commandPattern && candidate?.command && !new RegExp(requirement.commandPattern, 'i').test(candidate.command)) return 'not_run' as const;
     return candidate?.status ?? 'not_run' as const;
   });
-  const status = statuses.every((item) => item === 'passed') ? 'verified' : statuses.some((item) => item === 'failed') ? 'failed' : statuses.some((item) => item === 'stale') ? 'stale' : 'unverified';
+  const status = statuses.every((item) => item === 'passed') ? 'verified' : statuses.some((item) => item === 'failed') ? 'failed' : statuses.some((item) => item === 'blocked') ? 'blocked' : statuses.some((item) => item === 'stale') ? 'stale' : 'unverified';
   return { plan, evidence, status };
 }
 
@@ -83,6 +89,11 @@ function classifyCommand(command: string | undefined): VerificationKind {
 
 export function markVerificationStale(evidence: VerificationEvidence[]): VerificationEvidence[] {
   return evidence.map((item) => item.status === 'passed' ? { ...item, status: 'stale', summary: `${item.summary}; stale after file mutation` } : item);
+}
+
+function tail(value: string, maxChars = 2_000): string {
+  const trimmed = value.trimEnd();
+  return trimmed.length <= maxChars ? trimmed : `…${trimmed.slice(-maxChars)}`;
 }
 
 function asRecord(value: unknown): Record<string, unknown> | undefined { return typeof value === 'object' && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : undefined; }

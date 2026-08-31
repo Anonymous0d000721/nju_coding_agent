@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process';
 import type { ToolDefinition, ToolContext } from './types.js';
 import { resolveWorkspacePath } from './path-guard.js';
 import { redact } from '../shared/redact.js';
+import { terminateProcessTree } from '../shared/process-control.js';
 
 const DEFAULT_TIMEOUT_MS = 30_000;
 const MAX_OUTPUT_CHARS = 12_000;
@@ -71,7 +72,7 @@ async function runPowerShell(command: string, cwd: string, timeoutMs: number, si
 
     const onAbort = () => {
       cancelled = true;
-      child?.kill();
+      if (child) void terminateProcessTree(child).catch(() => undefined);
     };
 
     const start = () => {
@@ -87,7 +88,7 @@ async function runPowerShell(command: string, cwd: string, timeoutMs: number, si
       });
       timeout = setTimeout(() => {
         timedOut = true;
-        child?.kill();
+        if (child) void terminateProcessTree(child).catch(() => undefined);
       }, timeoutMs);
       child.stdout!.on('data', (chunk: Buffer) => {
         const appended = appendBounded(stdout, chunk.toString('utf8'));

@@ -14,14 +14,34 @@ export class ToolExecutor {
 
   get workspaceRoot(): string { return this.ctx.workspaceRoot; }
 
-  async executeBatch(toolCalls: ToolCall[], signal?: AbortSignal): Promise<ToolResult[]> {
-    const results: ToolResult[] = [];
-    for (const call of toolCalls) results.push(await this.execute(call, signal));
+  async executeBatch(toolCalls: ToolCall[], signal?: AbortSignal, maxConcurrency?: number): Promise<ToolResult[]> {
+    const results: ToolResult[] = new Array(toolCalls.length);
+    let nextIndex = 0;
+    const worker = async (): Promise<void> => {
+      for (;;) {
+        const index = nextIndex++;
+        const call = toolCalls[index];
+        if (!call) return;
+        if (signal?.aborted || this.ctx.signal?.aborted) {
+          results[index] = cancelledFailure(call, this.ctx.previewLines);
+          continue;
+        }
+        try {
+          results[index] = await this.execute(call, signal);
+        } catch (error) {
+          results[index] = failure(call.id, call.name, codeOf(error), messageOf(error), 0, detailsOf(error), call, this.ctx.previewLines);
+        }
+      }
+    };
+    const requestedConcurrency = maxConcurrency ?? this.ctx.maxConcurrency ?? 4;
+    const concurrency = Number.isFinite(requestedConcurrency) ? Math.max(1, Math.min(Math.floor(requestedConcurrency), 8)) : 4;
+    await Promise.all(Array.from({ length: Math.min(concurrency, toolCalls.length) }, () => worker()));
     return results;
   }
 
   private async execute(call: ToolCall, signal?: AbortSignal): Promise<ToolResult> {
     const started = Date.now();
+    if (signal?.aborted || this.ctx.signal?.aborted) return cancelledFailure(call, this.ctx.previewLines);
     const tool = this.registry.get(call.name);
     if (!tool) return failure(call.id, call.name, 'unknown_tool', `Unknown tool: ${call.name}`, Date.now() - started, undefined, call, this.ctx.previewLines);
 
@@ -81,6 +101,10 @@ export class ToolExecutor {
     }
   }
 
+}
+
+function cancelledFailure(call: ToolCall, previewLines?: number): ToolResult {
+  return failure(call.id, call.name, 'user_cancelled', 'Tool execution was cancelled before it started.', 0, undefined, call, previewLines);
 }
 
 function failure(toolCallId: string, toolName: string, code: string, message: string, elapsedMs: number, details?: unknown, call?: ToolCall, previewLines?: number, policyDecision?: ToolResult['policyDecision'], approval?: ApprovalRecord): ToolResult {

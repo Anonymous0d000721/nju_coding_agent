@@ -40,6 +40,10 @@ export interface RunStatus {
   errors: string[];
   convergence?: ConvergenceSummary;
   currentToolName?: string;
+  startedAt?: string;
+  endedAt?: string;
+  elapsedMs?: number;
+  budget?: { maxDurationMs?: number; exhausted?: boolean };
 }
 
 export interface RunReport extends RunStatus {
@@ -95,6 +99,8 @@ export function createProgressRunStatus(runId: string, progress: AgentRunProgres
     lastCompactionReason: progress.lastCompactionReason,
     warnings: progress.warnings,
     errors: progress.errors,
+    elapsedMs: progress.elapsedMs,
+    budget: progress.budget,
   }, context);
   return {
     ...status,
@@ -126,7 +132,7 @@ export function createRunStatus(runId: string, result: AgentRunResult, context: 
     runId,
     workspace: context.workspace,
     sessionId: context.sessionId,
-    state: result.stopReason === 'user_cancelled' ? 'cancelled' : result.stopReason === 'fatal_error' ? 'failed' : 'completed',
+    state: result.stopReason === 'user_cancelled' || result.stopReason === 'budget_exhausted' ? 'cancelled' : result.stopReason === 'fatal_error' ? 'failed' : 'completed',
     model: context.model,
     effort: context.effort,
     permissionMode: context.permissionMode,
@@ -145,6 +151,10 @@ export function createRunStatus(runId: string, result: AgentRunResult, context: 
     warnings: [...new Set(warnings)],
     errors: [...new Set(errors)],
     ...(result.convergence ? { convergence: result.convergence } : {}),
+    ...(result.startedAt ? { startedAt: result.startedAt } : {}),
+    ...(result.endedAt ? { endedAt: result.endedAt } : {}),
+    ...(result.elapsedMs !== undefined ? { elapsedMs: result.elapsedMs } : {}),
+    ...(result.budget ? { budget: result.budget } : {}),
   };
 }
 
@@ -215,6 +225,10 @@ function normalizeRunReport(value: unknown, fallbackRunId: string): RunReport | 
     errors: arrayOfStrings(source.errors),
     ...(source.convergence !== undefined ? { convergence: source.convergence as ConvergenceSummary } : {}),
     ...(typeof source.currentToolName === 'string' ? { currentToolName: source.currentToolName } : {}),
+    ...(typeof source.startedAt === 'string' ? { startedAt: source.startedAt } : {}),
+    ...(typeof source.endedAt === 'string' ? { endedAt: source.endedAt } : {}),
+    ...(typeof source.elapsedMs === 'number' ? { elapsedMs: source.elapsedMs } : {}),
+    ...(asRecord(source.budget) ? { budget: { ...(typeof asRecord(source.budget)?.maxDurationMs === 'number' ? { maxDurationMs: asRecord(source.budget)?.maxDurationMs as number } : {}), ...(asRecord(source.budget)?.exhausted === true ? { exhausted: true } : {}) } } : {}),
   };
 }
 
@@ -237,6 +251,10 @@ function normalizeVerification(value: unknown): VerificationSummary {
       ...(typeof evidence.cwd === 'string' ? { cwd: evidence.cwd } : {}),
       status: isVerificationEvidenceStatus(evidence.status) ? evidence.status : 'not_run',
       ...(typeof evidence.exitCode === 'number' || evidence.exitCode === null ? { exitCode: evidence.exitCode } : {}),
+      ...(typeof evidence.targetPath === 'string' ? { targetPath: evidence.targetPath } : {}),
+      ...(typeof evidence.endedAt === 'string' ? { endedAt: evidence.endedAt } : {}),
+      ...(typeof evidence.stdoutTail === 'string' ? { stdoutTail: evidence.stdoutTail } : {}),
+      ...(typeof evidence.stderrTail === 'string' ? { stderrTail: evidence.stderrTail } : {}),
       startedAt: typeof evidence.startedAt === 'string' ? evidence.startedAt : new Date(0).toISOString(),
       elapsedMs: numberOrZero(evidence.elapsedMs),
       sourceToolCallId: typeof evidence.sourceToolCallId === 'string' ? evidence.sourceToolCallId : 'legacy',
@@ -247,7 +265,7 @@ function normalizeVerification(value: unknown): VerificationSummary {
 }
 
 function stateFromStopReason(stopReason: AgentRunResult['stopReason'] | undefined): RunStatus['state'] {
-  if (stopReason === 'user_cancelled') return 'cancelled';
+  if (stopReason === 'user_cancelled' || stopReason === 'budget_exhausted') return 'cancelled';
   if (stopReason === 'fatal_error') return 'failed';
   return stopReason ? 'completed' : 'idle';
 }
@@ -257,8 +275,8 @@ function arrayOfStrings(value: unknown): string[] { return Array.isArray(value) 
 function isRunState(value: unknown): value is RunStatus['state'] { return value === 'idle' || value === 'running' || value === 'completed' || value === 'failed' || value === 'cancelled'; }
 function isStopReason(value: unknown): value is AgentRunResult['stopReason'] { return value === 'completed' || value === 'model_finished' || value === 'user_cancelled' || value === 'budget_exhausted' || value === 'context_overflow' || value === 'convergence_stopped' || value === 'fatal_error'; }
 function isCompactionReason(value: unknown): value is NonNullable<RunStatus['lastCompactionReason']> { return value === 'threshold' || value === 'overflow' || value === 'manual'; }
-function isVerificationStatus(value: unknown): value is VerificationSummary['status'] { return value === 'verified' || value === 'failed' || value === 'unverified' || value === 'stale' || value === 'not_required'; }
-function isVerificationEvidenceStatus(value: unknown): value is VerificationSummary['evidence'][number]['status'] { return value === 'passed' || value === 'failed' || value === 'not_run' || value === 'stale'; }
+function isVerificationStatus(value: unknown): value is VerificationSummary['status'] { return value === 'verified' || value === 'failed' || value === 'blocked' || value === 'unverified' || value === 'stale' || value === 'not_required'; }
+function isVerificationEvidenceStatus(value: unknown): value is VerificationSummary['evidence'][number]['status'] { return value === 'passed' || value === 'failed' || value === 'not_run' || value === 'stale' || value === 'blocked'; }
 
 function commandStatus(tool: ToolResult, workspace: string): CommandStatus[] {
   if (tool.toolName !== 'run_command' && tool.toolName !== 'background_command') return [];

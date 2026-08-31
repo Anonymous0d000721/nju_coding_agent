@@ -17,6 +17,8 @@ export interface AgentConfig {
   memory: { enabled: boolean; rootDir?: string };
   mcpServers: Array<{ name: string; command: string; args?: string[]; cwd?: string; env?: Record<string, string> }>;
   mcpTimeoutMs?: number;
+  maxDurationMs?: number;
+  maxConcurrency?: number;
 }
 
 export function loadConfig(input: { env: NodeJS.ProcessEnv; args: CliArgs; cwd: string }): AgentConfig {
@@ -44,6 +46,8 @@ export function loadConfig(input: { env: NodeJS.ProcessEnv; args: CliArgs; cwd: 
     memory: { enabled: parseBoolean(envValue('NJU_AGENT_MEMORY_ENABLED'), true), rootDir: envValue('NJU_AGENT_MEMORY_DIR') },
     mcpServers: parseMcpServers(envValue('NJU_AGENT_MCP_SERVERS')),
     mcpTimeoutMs: parsePositiveInteger(envValue('NJU_AGENT_MCP_TIMEOUT_MS'), 30_000, 300_000, 'NJU_AGENT_MCP_TIMEOUT_MS'),
+    maxDurationMs: parsePositiveInteger(envValue('NJU_AGENT_MAX_DURATION_MS'), 600_000, 1_800_000, 'NJU_AGENT_MAX_DURATION_MS'),
+    maxConcurrency: parsePositiveInteger(envValue('NJU_AGENT_MAX_TOOL_CONCURRENCY'), 4, 8, 'NJU_AGENT_MAX_TOOL_CONCURRENCY'),
   };
 }
 

@@ -2,7 +2,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import type { ToolDefinition, ToolContext } from './types.js';
-import { assertSafeWritePath, isSensitiveRelativePath, normalizeRelative, resolveWorkspacePath } from './path-guard.js';
+import { assertSafeWritePath, isInsidePath, isSensitiveRelativePath, normalizeRelative, resolveWorkspacePath } from './path-guard.js';
 
 const MAX_READ_LINES = 400;
 const MAX_LIST_ENTRIES = 300;
@@ -35,7 +35,7 @@ function listFilesTool(): ToolDefinition {
         const rel = normalizeRelative(path.relative(ctx.workspaceRoot, absolute));
         if (isSensitiveRelativePath(rel)) return;
         entries.push(`${dirent.isDirectory() ? 'dir ' : 'file'} ${rel}`);
-      });
+      }, ctx.workspaceRoot);
       return { path: resolved.relativePath, entries, truncated: entries.length >= MAX_LIST_ENTRIES };
     },
   };
@@ -98,7 +98,9 @@ function writeFileTool(): ToolDefinition {
     readonly: false,
     async handler(args: unknown, ctx: ToolContext) {
       const input = asRecord(args);
-      const resolved = await resolveWorkspacePath(ctx.workspaceRoot, asString(input.path));
+      const requestedPath = asString(input.path);
+      assertSafeWritePath(requestedPath);
+      const resolved = await resolveWorkspacePath(ctx.workspaceRoot, requestedPath);
       assertSafeWritePath(resolved.relativePath);
       if (input.createDirectories === true) await fs.mkdir(path.dirname(resolved.absolutePath), { recursive: true });
       const content = asString(input.content);
@@ -145,7 +147,9 @@ function hashlineEditTool(): ToolDefinition {
     readonly: false,
     async handler(args: unknown, ctx: ToolContext) {
       const input = asRecord(args);
-      const resolved = await resolveWorkspacePath(ctx.workspaceRoot, asString(input.path));
+      const requestedPath = asString(input.path);
+      assertSafeWritePath(requestedPath);
+      const resolved = await resolveWorkspacePath(ctx.workspaceRoot, requestedPath);
       assertSafeWritePath(resolved.relativePath);
       if (!Array.isArray(input.edits)) throw Object.assign(new Error('edits must be an array'), { code: 'invalid_arguments' });
       return withFileLock(resolved.absolutePath, async () => {
@@ -211,7 +215,7 @@ function globFilesTool(): ToolDefinition {
         const rel = normalizeRelative(path.relative(ctx.workspaceRoot, absolute));
         if (isSensitiveRelativePath(rel)) return;
         if (regex.test(rel)) matches.push(rel);
-      });
+      }, ctx.workspaceRoot);
       return { matches, truncated: matches.length >= MAX_SEARCH_RESULTS };
     },
   };
@@ -240,22 +244,29 @@ function grepFilesTool(): ToolDefinition {
         parseText(buffer.toString('utf8')).lines.forEach((line, index) => {
           if (matches.length < MAX_SEARCH_RESULTS && pattern.test(line)) matches.push({ path: rel, line: index + 1, text: line.slice(0, 240) });
         });
-      });
+      }, ctx.workspaceRoot);
       return { matches, truncated: matches.length >= MAX_SEARCH_RESULTS };
     },
   };
 }
 
-async function walk(root: string, depth: number, includeHidden: boolean, visit: (absolute: string, dirent: import('node:fs').Dirent) => Promise<void>): Promise<void> {
+async function walk(root: string, depth: number, includeHidden: boolean, visit: (absolute: string, dirent: import('node:fs').Dirent) => Promise<void>, workspaceRoot: string): Promise<void> {
   if (depth < 0) return;
   let dirents: import('node:fs').Dirent[];
-  try { dirents = await fs.readdir(root, { withFileTypes: true }); } catch { return; }
+  let realWorkspaceRoot: string;
+  try {
+    dirents = await fs.readdir(root, { withFileTypes: true });
+    realWorkspaceRoot = await fs.realpath(workspaceRoot);
+  } catch { return; }
   for (const dirent of dirents) {
     if (!includeHidden && dirent.name.startsWith('.')) continue;
     if (dirent.name === 'node_modules' || isSensitiveRelativePath(dirent.name)) continue;
     const absolute = path.join(root, dirent.name);
+    let realPath: string;
+    try { realPath = await fs.realpath(absolute); } catch { continue; }
+    if (!isInsidePath(realWorkspaceRoot, realPath)) continue;
     await visit(absolute, dirent);
-    if (dirent.isDirectory()) await walk(absolute, depth - 1, includeHidden, visit);
+    if (dirent.isDirectory()) await walk(absolute, depth - 1, includeHidden, visit, workspaceRoot);
   }
 }
 

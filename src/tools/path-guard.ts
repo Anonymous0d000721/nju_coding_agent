@@ -7,6 +7,9 @@ export interface ResolvedWorkspacePath {
 }
 
 export async function resolveWorkspacePath(workspaceRoot: string, inputPath = '.'): Promise<ResolvedWorkspacePath> {
+  if (typeof inputPath !== 'string' || inputPath.length === 0 || inputPath.includes('\u0000')) {
+    throw Object.assign(new Error('Workspace paths must be non-empty strings without NUL characters'), { code: 'invalid_path' });
+  }
   const root = path.resolve(workspaceRoot);
   const absolutePath = path.resolve(root, inputPath);
   if (!isInsidePath(root, absolutePath)) {
@@ -27,6 +30,8 @@ export async function resolveWorkspacePath(workspaceRoot: string, inputPath = '.
 }
 
 export function assertSafeWritePath(relativePath: string): void {
+  if (relativePath.includes('\u0000')) throw Object.assign(new Error('Writing a path containing a NUL character is not allowed'), { code: 'invalid_path' });
+  if (path.isAbsolute(relativePath)) throw Object.assign(new Error('Write paths must be workspace-relative'), { code: 'invalid_path' });
   if (isSensitiveRelativePath(relativePath)) {
     throw Object.assign(new Error('Writing a protected path is not allowed'), { code: 'sensitive_path' });
   }
@@ -39,8 +44,9 @@ export function isSensitiveRelativePath(relativePath: string): boolean {
   return segments.some((segment) => {
     if (segment === '.env.example') return false;
     if (segment === '.env' || segment.startsWith('.env.')) return true;
-    if (segment.endsWith('.pem') || segment.endsWith('.key') || segment.endsWith('.p12') || segment.endsWith('.pfx')) return true;
-    return ['id_rsa', 'id_ed25519', 'id_ecdsa', 'credentials', 'credential', 'token', 'tokens', 'secret', 'secrets'].includes(segment);
+    if (segment.endsWith('.pem') || segment.endsWith('.key') || segment.endsWith('.p12') || segment.endsWith('.pfx') || segment.endsWith('.crt') || segment.endsWith('.cer')) return true;
+    return ['.ssh', 'id_rsa', 'id_ed25519', 'id_ecdsa', 'authorized_keys', 'credentials', 'credential', 'token', 'tokens', 'secret', 'secrets'].includes(segment)
+      || segment.includes('credential') || segment.includes('token') || segment.includes('secret');
   });
 }
 

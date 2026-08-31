@@ -1,6 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import type { ToolDefinition } from '../tools/types.js';
+import { normalizeRelative, resolveWorkspacePath } from '../tools/path-guard.js';
 import type { UserPlugin, UserPluginModule } from './types.js';
 
 export interface LoadedUserPlugin extends UserPlugin {
@@ -9,7 +10,7 @@ export interface LoadedUserPlugin extends UserPlugin {
 
 export async function loadUserPlugins(workspaceRoot: string, trusted: boolean, reload = false): Promise<LoadedUserPlugin[]> {
   if (!trusted) return [];
-  const directory = path.join(workspaceRoot, '.nju-agent', 'plugins');
+  const directory = (await resolveWorkspacePath(workspaceRoot, '.nju-agent/plugins')).absolutePath;
   let files: string[];
   try {
     files = (await fs.readdir(directory, { withFileTypes: true }))
@@ -22,12 +23,13 @@ export async function loadUserPlugins(workspaceRoot: string, trusted: boolean, r
   }
   const plugins: LoadedUserPlugin[] = [];
   for (const file of files) {
+    const safeFile = await resolveWorkspacePath(workspaceRoot, normalizeRelative(path.relative(workspaceRoot, file)));
     const suffix = reload ? `?reload=${Date.now()}-${Math.random()}` : '';
-    const module = await import(`${pathToFileUrl(file)}${suffix}`) as UserPluginModule;
+    const module = await import(`${pathToFileUrl(safeFile.absolutePath)}${suffix}`) as UserPluginModule;
     const candidate = module.default ?? module.plugin;
     const plugin = typeof candidate === 'function' ? await candidate() : candidate;
     validatePlugin(plugin, file);
-    plugins.push({ ...plugin, source: file });
+    plugins.push({ ...plugin, source: safeFile.absolutePath });
   }
   return plugins;
 }

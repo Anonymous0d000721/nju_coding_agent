@@ -12,6 +12,7 @@ import type { AgentConfig } from '../shared/config.js';
 import { ApprovalBroker, type ApprovalRequest, type ApprovalOutcome } from '../tools/approval.js';
 import type { ToolApprovalHandler } from '../tools/types.js';
 import { redact } from '../shared/redact.js';
+import { isInsidePath, isSensitiveRelativePath, normalizeRelative, resolveWorkspacePath } from '../tools/path-guard.js';
 import { ProjectTrustStore } from '../shared/trust.js';
 import { renderHelp, renderVersion } from './renderer.js';
 import { backspace, createEditorState, deleteForward, graphemeBoundaries, insertPaste, insertText, moveDown, moveLeft, moveRight, moveUp, parseBracketedPaste, slashCompletions, submitEditor, type EditorState } from './editor-state.js';
@@ -547,7 +548,13 @@ export async function findFileCompletions(workspaceRoot: string, query: string, 
       if (entry.name.startsWith('.') && entry.isDirectory()) continue;
       if (['node_modules', '.git', '.nju-agent', 'dist'].includes(entry.name) && entry.isDirectory()) continue;
       const absolute = path.join(directory, entry.name);
-      const relative = path.relative(root, absolute).replace(/\\/g, '/');
+      const relative = normalizeRelative(path.relative(root, absolute));
+      if (isSensitiveRelativePath(relative)) continue;
+      let realPath: string;
+      try { realPath = await fs.realpath(absolute); } catch { continue; }
+      let realRoot: string;
+      try { realRoot = await fs.realpath(root); } catch { return; }
+      if (!isInsidePath(realRoot, realPath)) continue;
       if (entry.isDirectory()) await visit(absolute);
       else if (relative.toLowerCase().startsWith(query.toLowerCase())) results.push({ name: relative, description: 'file', kind: 'file' });
     }
