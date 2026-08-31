@@ -9,8 +9,9 @@ import { clampThinkingLevel } from '../model/thinking.js';
 import { createSessionNameEntry, createThinkingLevelChangeEntry } from '../session/entries.js';
 import { JsonlSessionStore } from '../session/jsonl-store.js';
 import type { AgentConfig } from '../shared/config.js';
+import { ApprovalBroker, type ApprovalRequest, type ApprovalOutcome } from '../tools/approval.js';
+import type { ToolApprovalHandler } from '../tools/types.js';
 import { redact } from '../shared/redact.js';
-import type { ToolDefinition } from '../tools/types.js';
 import { ProjectTrustStore } from '../shared/trust.js';
 import { renderHelp, renderVersion } from './renderer.js';
 import { backspace, createEditorState, deleteForward, graphemeBoundaries, insertPaste, insertText, moveDown, moveLeft, moveRight, moveUp, parseBracketedPaste, slashCompletions, submitEditor, type EditorState } from './editor-state.js';
@@ -55,7 +56,7 @@ function TuiApp({ config, runPrompt, compactSession, memoryStatus }: TuiOptions)
   const [runStatus, setRunStatus] = useState<RunStatus>(() => createIdleRunStatus(statusContext));
   const [sessionId, setSessionId] = useState<string | undefined>(undefined);
   const [sessionLabel, setSessionLabel] = useState<string | undefined>(undefined);
-  const [approval, setApproval] = useState<ToolDefinition>();
+  const [approval, setApproval] = useState<ApprovalRequest>();
   const [showReasoning, setShowReasoning] = useState(true);
   const reloadPlugins = useRef(false);
   const markPluginsForReload = () => { reloadPlugins.current = true; };
@@ -70,7 +71,11 @@ function TuiApp({ config, runPrompt, compactSession, memoryStatus }: TuiOptions)
   const { rows: terminalRows } = useWindowSize();
   const controller = useRef<AbortController | undefined>(undefined);
   const hydrationController = useRef<AbortController | undefined>(undefined);
-  const approvalResolver = useRef<((allowed: boolean) => void) | undefined>(undefined);
+  const approvalBroker = useRef<ApprovalBroker | undefined>(undefined);
+  if (!approvalBroker.current) approvalBroker.current = new ApprovalBroker({
+    onRequest: (request) => { setApproval(request); },
+    onResult: (request) => { setApproval((current) => current?.requestId === request.requestId ? undefined : current); },
+  });
   const queuedMessages = useRef<string[]>([]);
   const steeredMessages = useRef<string[]>([]);
   const runControl = useRef<AgentRunControl>({
@@ -201,7 +206,7 @@ function TuiApp({ config, runPrompt, compactSession, memoryStatus }: TuiOptions)
       if (hydrationController.current === signal) hydrationController.current = undefined;
     }
   };
-  const cancelRun = () => { if (status !== 'running') return; setStatus('cancelling'); controller.current?.abort(); };
+  const cancelRun = () => { if (status !== 'running') return; setStatus('cancelling'); approvalBroker.current?.cancelAll('TUI run was cancelled.'); controller.current?.abort(); };
   const submitWhileRunning = (kind: 'queue' | 'steer') => {
     const submitted = submitEditor(editor);
     if (!submitted.prompt) return;
@@ -214,8 +219,12 @@ function TuiApp({ config, runPrompt, compactSession, memoryStatus }: TuiOptions)
       appendSystem(`Steering message: ${submitted.prompt}`);
     }
   };
-  const requestApproval = (tool: ToolDefinition) => new Promise<boolean>((resolve) => { approvalResolver.current = resolve; setApproval(tool); });
-  const resolveApproval = (allowed: boolean) => { approvalResolver.current?.(allowed); approvalResolver.current = undefined; setApproval(undefined); };
+  const requestApproval: ToolApprovalHandler = (_tool, _decision, _args, request, context) => approvalBroker.current!.request(request, context.signal);
+  const resolveApproval = (outcome: ApprovalOutcome) => {
+    if (!approval) return;
+    approvalBroker.current!.resolve(approval.requestId, { outcome });
+    setApproval(undefined);
+  };
   useEffect(() => {
     if (!initialSessionId.current || initialHydrationStarted.current) return;
     initialHydrationStarted.current = true;
@@ -255,8 +264,10 @@ function TuiApp({ config, runPrompt, compactSession, memoryStatus }: TuiOptions)
     else if (value.startsWith('\u001B[200~') && paste.paste === undefined) { setPasteBuffer(value); return; }
     else if (paste.paste !== undefined) { updateEditor((state) => insertPaste(state, paste.paste!).state); value = paste.rest; }
     if (approval) {
-      if (key.return || value.toLowerCase() === 'y') { resolveApproval(true); return; }
-      if (key.escape || value.toLowerCase() === 'n') { resolveApproval(false); return; }
+      if (key.ctrl && value === 'c') { cancelRun(); approvalBroker.current!.cancelAll('TUI run was cancelled.'); setApproval(undefined); return; }
+      if (key.return || value.toLowerCase() === 'y') { resolveApproval('allow_once'); return; }
+      if (value.toLowerCase() === 'a') { resolveApproval('allow_session'); return; }
+      if (key.escape || value.toLowerCase() === 'n') { resolveApproval('deny'); return; }
       return;
     }
     if (picker) {
@@ -313,7 +324,7 @@ function TuiApp({ config, runPrompt, compactSession, memoryStatus }: TuiOptions)
     <Text color="gray" dimColor>nju-agent · {config.workspaceRoot}</Text>
     <TranscriptView messages={messages} terminalRows={terminalRows} offset={transcriptOffset} historyHasMore={historyHasMore} />
     <EditorView editor={editor} busy={busy} />
-    {approval ? <ApprovalView tool={approval} /> : picker ? <PickerView picker={picker} /> : completion.length ? <CompletionView items={completion} selectedIndex={completionIndex} /> : null}
+    {approval ? <ApprovalView approval={approval} /> : picker ? <PickerView picker={picker} /> : completion.length ? <CompletionView items={completion} selectedIndex={completionIndex} /> : null}
     <Text color={statusColor} wrap="truncate">{statusText}</Text>
   </Box>;
 }
@@ -377,8 +388,8 @@ function CompletionView({ items, selectedIndex }: { items: readonly CompletionIt
   const files = items.some((item) => item.kind === 'file');
   return <Box flexDirection="column"><Text color="cyan">{files ? 'files' : 'commands'} · ↑/↓ choose · Tab/Enter accept · Esc cancel</Text>{items.map((item, index) => <Box key={`${item.kind}-${item.name}`} width="100%" backgroundColor={index === selectedIndex ? 'gray' : undefined}><Text color={index === selectedIndex ? 'white' : 'gray'}>{index === selectedIndex ? '› ' : '  '}{item.name} — {item.description}</Text></Box>)}</Box>;
 }
-function ApprovalView({ tool }: { tool: ToolDefinition }) {
-  return <Box flexDirection="column"><Text color="yellow">Allow {tool.name} · {tool.risk}</Text><Text color="gray">{tool.description}</Text><Text color="gray">Enter/y allow · n/Esc deny</Text></Box>;
+function ApprovalView({ approval }: { approval: ApprovalRequest }) {
+  return <Box flexDirection="column"><Text color="yellow">Allow {approval.toolName} · {approval.risk}</Text><Text color="gray">{approval.reason}</Text><Text color="gray">path: {approval.workspacePath ?? '(none)'}</Text><Text color="gray">Enter/y allow once · a allow session · n/Esc deny</Text></Box>;
 }
 function PickerView({ picker }: { picker: PickerState }) {
   return <Box flexDirection="column"><Text color="cyan">{picker.title} (↑/↓ choose · Enter select · Esc cancel)</Text>{picker.options.map((option, index) => <Box key={`${option.value}-${index}`} width="100%" backgroundColor={!option.disabled && index === picker.index ? 'gray' : undefined}><Text color={option.disabled ? 'gray' : index === picker.index ? 'white' : 'white'}>{index === picker.index ? '› ' : '  '}{option.label}</Text>{option.description ? <Text color="gray"> — {option.description}</Text> : null}</Box>)}</Box>;

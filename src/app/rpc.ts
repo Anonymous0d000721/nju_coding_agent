@@ -5,6 +5,8 @@ import { JsonlSessionStore, sessionName } from '../session/jsonl-store.js';
 import { createSessionNameEntry, createThinkingLevelChangeEntry } from '../session/entries.js';
 import type { AgentConfig } from '../shared/config.js';
 import type { AgentRunControl, AgentStreamEvent } from '../agent/types.js';
+import { ApprovalBroker } from '../tools/approval.js';
+import type { ToolApprovalHandler } from '../tools/types.js';
 import { clampThinkingLevel } from '../model/thinking.js';
 import type { ThinkingLevel } from '../model/model-client.js';
 import { MemoryPlugin } from '../context/memory.js';
@@ -35,12 +37,13 @@ interface RpcDeps {
     showThinking?: boolean,
     onAgentEvent?: (event: AgentStreamEvent) => void | Promise<void>,
     signal?: AbortSignal,
-    approveTool?: undefined,
+    approveTool?: ToolApprovalHandler,
     reloadPlugins?: boolean,
     control?: AgentRunControl,
     onRunProgress?: (status: RunStatus) => void | Promise<void>,
   ) => Promise<AppResult>;
   compactSession: (config: AgentConfig, sessionId: string) => Promise<{ compacted: boolean; omittedMessages: number; outputChars: number }>;
+  approvalTimeoutMs?: number;
 }
 
 function statusContext(config: AgentConfig, sessionId?: string): RunStatusContext {
@@ -56,6 +59,11 @@ export async function runRpc(deps: RpcDeps): Promise<AppResult> {
   let reloadPlugins = false;
   let reasoningDisplay = false;
   let shuttingDown = false;
+  const approvalBroker = new ApprovalBroker({
+    timeoutMs: deps.approvalTimeoutMs,
+    onRequest: async (request) => { write({ jsonrpc: '2.0', method: 'approval/request', params: request }); },
+    onResult: async (request, record) => { write({ jsonrpc: '2.0', method: 'approval/result', params: { ...record, runId: request.runId, toolCallId: request.toolCallId, toolName: request.toolName } }); },
+  });
 
   const error = (id: RpcRequest['id'], code: number, message: string, data?: unknown): void => {
     if (id === undefined) return;
@@ -93,7 +101,7 @@ export async function runRpc(deps: RpcDeps): Promise<AppResult> {
     try {
       switch (request.method) {
         case 'initialize':
-          reply({ protocolVersion: '1.0', server: { name: 'nju-agent', version: '0.1.0' }, capabilities: { sessions: true, streaming: true, cancel: true, slash: true } });
+          reply({ protocolVersion: '1.0', clientId: approvalBroker.clientId, server: { name: 'nju-agent', version: '0.1.0' }, capabilities: { sessions: true, streaming: true, cancel: true, slash: true, approval: true } });
           return;
         case 'session/new': {
           const session = await store.create({ cwd: deps.config.workspaceRoot, model: deps.config.model.model, appVersion: '0.1.0' });
@@ -119,6 +127,19 @@ export async function runRpc(deps: RpcDeps): Promise<AppResult> {
           reply(activeRun?.status ?? latestStatus ?? createIdleRunStatus(statusContext(deps.config, sessionId)));
           return;
         }
+        case 'approval/resolve': {
+          const requestId = stringParam(params, 'requestId');
+          const outcome = stringParam(params, 'outcome');
+          const resolution = { outcome: outcome as import('../tools/approval.js').ApprovalOutcome, ...(typeof params.reason === 'string' ? { reason: params.reason } : {}) };
+          const resolved = approvalBroker.resolve(requestId, resolution, {
+            clientId: stringParam(params, 'clientId'),
+            runId: stringParam(params, 'runId'),
+            toolCallId: stringParam(params, 'toolCallId'),
+          });
+          if (!resolved.ok) throw rpcError(-32010, resolved.code ?? 'approval_resolution_failed');
+          reply({ resolved: true, requestId });
+          return;
+        }
         case 'prompt': {
           const text = stringParam(params, 'text');
           if (!deps.config.model.apiKey) { error(request.id, -32003, 'Missing API key. Set NJU_AGENT_API_KEY, NJU_AGENT_BASE_URL, and NJU_AGENT_MODEL. See .env.example.'); return; }
@@ -134,7 +155,8 @@ export async function runRpc(deps: RpcDeps): Promise<AppResult> {
           const runningStatus = createRunningRunStatus(runId, statusContext(deps.config, sessionId));
           activeRun = { runId, controller, control, done: Promise.resolve(), status: runningStatus };
           event('run_start', { sessionId, status: runningStatus }, runId);
-          const done = deps.runPrompt(deps.config, text, sessionId, 'text', deps.config.model.thinking, undefined, false, async (streamEvent) => emitAgentEvent(event, streamEvent, runId), controller.signal, undefined, reloadPlugins, control, (status) => setActiveStatus(runId, status))
+          const approveTool: ToolApprovalHandler = (tool, decision, args, request, context) => approvalBroker.request({ ...request, runId }, context.signal);
+          const done = deps.runPrompt(deps.config, text, sessionId, 'text', deps.config.model.thinking, undefined, false, async (streamEvent) => emitAgentEvent(event, streamEvent, runId), controller.signal, approveTool, reloadPlugins, control, (status) => setActiveStatus(runId, status))
             .then((result) => {
               if (result.sessionId) sessionId = result.sessionId;
               const status = result.status ?? { ...createRunningRunStatus(runId, statusContext(deps.config, sessionId)), state: result.exitCode === 0 ? 'completed' as const : 'failed' as const };
@@ -155,6 +177,7 @@ export async function runRpc(deps: RpcDeps): Promise<AppResult> {
         case 'cancel': {
           if (!activeRun || (typeof params.runId === 'string' && params.runId !== activeRun.runId)) { reply({ cancelled: false }); return; }
           activeRun.controller.abort();
+          approvalBroker.cancelAll('RPC run was cancelled.');
           reply({ cancelled: true, runId: activeRun.runId });
           return;
         }
@@ -166,6 +189,7 @@ export async function runRpc(deps: RpcDeps): Promise<AppResult> {
             reply({ shuttingDown: true });
             shuttingDown = true;
             const runToStop = activeRun;
+            approvalBroker.cancelAll('RPC service is shutting down.');
             runToStop?.controller.abort();
             if (runToStop) await runToStop.done;
             input.close();
@@ -254,6 +278,7 @@ export async function runRpc(deps: RpcDeps): Promise<AppResult> {
           reply({ shuttingDown: true });
           shuttingDown = true;
           const runToStop = activeRun;
+          approvalBroker.cancelAll('RPC service is shutting down.');
           runToStop?.controller.abort();
           if (runToStop) await runToStop.done;
           input.close();
@@ -276,7 +301,13 @@ export async function runRpc(deps: RpcDeps): Promise<AppResult> {
       catch { error(null, -32700, 'Parse error'); return; }
       void handle(request);
     });
-    input.on('close', () => resolve({ exitCode: shuttingDown ? 0 : 0 }));
+    input.on('close', () => {
+      approvalBroker.cancelAll('RPC client disconnected.');
+      const runToStop = activeRun;
+      runToStop?.controller.abort();
+      if (runToStop) void runToStop.done.finally(() => resolve({ exitCode: shuttingDown ? 0 : 0 }));
+      else resolve({ exitCode: shuttingDown ? 0 : 0 });
+    });
   });
 }
 
@@ -284,7 +315,7 @@ function emitAgentEvent(write: (type: string, data: unknown, runId?: string) => 
   if (streamEvent.type === 'text_delta') write('message_delta', { text: streamEvent.delta }, runId);
   else if (streamEvent.type === 'thinking_delta') write('thinking_delta', { text: streamEvent.delta }, runId);
   else if (streamEvent.type === 'tool_call') write('tool_call_start', { tool: streamEvent.toolCall.name, preview: streamEvent.preview ?? streamEvent.toolCall.preview }, runId);
-  else if (streamEvent.type === 'tool_result') write('tool_result', { tool: streamEvent.result.toolName, status: streamEvent.result.ok ? 'ok' : 'error', preview: streamEvent.result.preview, elapsedMs: streamEvent.result.elapsedMs, error: streamEvent.result.error }, runId);
+  else if (streamEvent.type === 'tool_result') write('tool_result', { tool: streamEvent.result.toolName, status: streamEvent.result.ok ? 'ok' : 'error', preview: streamEvent.result.preview, elapsedMs: streamEvent.result.elapsedMs, error: streamEvent.result.error, approval: streamEvent.result.approval }, runId);
 }
 
 function stringParam(params: Record<string, unknown>, name: string): string {

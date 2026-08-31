@@ -8,6 +8,7 @@ import type { SessionEntry } from '../../src/session/session-types.js';
 import type { AgentStreamEvent } from '../../src/agent/types.js';
 import { createIdleRunStatus, type RunStatus } from '../../src/telemetry/report.js';
 import { JsonlSessionStore } from '../../src/session/jsonl-store.js';
+import { ApprovalBroker } from '../../src/tools/approval.js';
 
 const base: TuiMessage[] = [{ role: 'system', text: 'ready' }];
 
@@ -174,6 +175,18 @@ describe('TUI event rendering', () => {
     expect(messagePresentation({ role: 'assistant', text: 'answer' })).toEqual({ color: 'white', marker: '' });
     expect(messagePresentation({ role: 'tool', text: 'failed', ok: false })).toEqual({ color: 'red', marker: '• ' });
     expect(messagePresentation({ role: 'thinking', text: 'reasoning' })).toEqual({ color: 'gray', marker: '· ', dim: true });
+  });
+
+  it('shares the approval broker lifecycle used by TUI and RPC', async () => {
+    let visibleRequest: Awaited<ReturnType<ApprovalBroker['pendingRequests']>>[number] | undefined;
+    const visibility = new ApprovalBroker({ onRequest: (request) => { visibleRequest = request; }, onResult: (request) => { if (visibleRequest?.requestId === request.requestId) visibleRequest = undefined; } });
+    const pending = visibility.request({ runId: 'tui-run', toolCallId: 'tui-call', toolName: 'write_file', risk: 'medium', args: { path: 'src/app.ts', token: '[REDACTED]' }, workspacePath: 'src/app.ts', reason: 'Mutation requires approval.', grantKey: 'write_file:mutation-approval' });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(visibleRequest).toMatchObject({ runId: 'tui-run', toolCallId: 'tui-call', args: { token: '[REDACTED]' } });
+    expect(visibility.resolve(visibleRequest!.requestId, { outcome: 'allow_once', reason: 'approved in TUI' })).toEqual({ ok: true });
+    await expect(pending).resolves.toMatchObject({ outcome: 'allow_once' });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(visibleRequest).toBeUndefined();
   });
 
   it('rebuilds persisted conversation and tool status for session hydration', () => {

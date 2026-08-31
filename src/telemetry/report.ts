@@ -26,7 +26,7 @@ export interface RunStatus {
   permissionMode: string;
   turns: number;
   toolCalls: number;
-  tools: Array<{ name: string; ok: boolean; elapsedMs?: number; errorCode?: string; policy?: unknown }>;
+  tools: Array<{ name: string; ok: boolean; elapsedMs?: number; errorCode?: string; policy?: unknown; approval?: unknown }>;
   policyDecisions: number;
   toolSuccesses: number;
   toolFailures: number;
@@ -112,6 +112,7 @@ export function createRunStatus(runId: string, result: AgentRunResult, context: 
     ...(tool.elapsedMs > 0 ? { elapsedMs: tool.elapsedMs } : {}),
     ...(tool.error?.code ? { errorCode: tool.error.code } : {}),
     ...(tool.policyDecision ? { policy: tool.policyDecision } : {}),
+    ...(tool.approval ? { approval: tool.approval } : {}),
   }));
   const commands = results.flatMap((tool) => commandStatus(tool, context.workspace));
   const filesChanged = results.flatMap((tool) => {
@@ -190,6 +191,7 @@ function normalizeRunReport(value: unknown, fallbackRunId: string): RunReport | 
       ...(typeof tool.elapsedMs === 'number' ? { elapsedMs: tool.elapsedMs } : {}),
       ...(typeof tool.errorCode === 'string' ? { errorCode: tool.errorCode } : {}),
       ...(tool.policy !== undefined ? { policy: tool.policy } : {}),
+      ...(tool.approval !== undefined ? { approval: tool.approval } : {}),
     })),
     policyDecisions: numberOrZero(source.policyDecisions),
     toolSuccesses: numberOrZero(source.toolSuccesses),

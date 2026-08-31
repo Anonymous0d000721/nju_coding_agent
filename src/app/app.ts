@@ -16,7 +16,7 @@ import { runTui } from './tui.js';
 import { loadConfig } from '../shared/config.js';
 import { redact } from '../shared/redact.js';
 import { JsonlSessionStore } from '../session/jsonl-store.js';
-import { createFileMutationEntry, createMessageEntry, createRunEndEntry, createRunStartEntry, createSummaryEntry, createThinkingLevelChangeEntry } from '../session/entries.js';
+import { createApprovalEntry, createFileMutationEntry, createMessageEntry, createRunEndEntry, createRunStartEntry, createSummaryEntry, createThinkingLevelChangeEntry } from '../session/entries.js';
 import { loadProjectInstructions } from '../context/instructions.js';
 import { createNativeContribution, HarnessPluginHost, renderContributions } from '../context/harness.js';
 import { MemoryPlugin } from '../context/memory.js';
@@ -34,7 +34,7 @@ import { registerMcpTools } from '../mcp/registry-adapter.js';
 import { loadUserPlugins, pluginTools } from '../plugins/loader.js';
 import { runRpc } from './rpc.js';
 import type { AgentMessage, AgentRunControl, AgentRunProgress, AgentRunResult, AgentStreamEvent } from '../agent/types.js';
-import type { ToolDefinition } from '../tools/types.js';
+import type { ToolApprovalHandler, ToolDefinition } from '../tools/types.js';
 import type { ThinkingLevel } from '../model/model-client.js';
 import { clampThinkingLevel } from '../model/thinking.js';
 import type { AgentConfig } from '../shared/config.js';
@@ -50,6 +50,14 @@ export interface AppServices {
 
 export interface AppResult { exitCode: number; stdout?: string; stderr?: string; sessionId?: string; status?: RunStatus; }
 
+function parseApprovalTimeout(env: NodeJS.ProcessEnv): number | undefined {
+  const raw = env.NJU_AGENT_APPROVAL_TIMEOUT_MS;
+  if (raw === undefined) return undefined;
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value < 1 || value > 300_000) throw new Error(`Invalid NJU_AGENT_APPROVAL_TIMEOUT_MS: ${raw}. Expected an integer from 1 to 300000`);
+  return value;
+}
+
 export function createApp(services: AppServices) {
   return {
     async run(): Promise<AppResult> {
@@ -57,7 +65,7 @@ export function createApp(services: AppServices) {
       if (args.help) return { exitCode: 0, stdout: renderHelp() };
       if (args.version) return { exitCode: 0, stdout: renderVersion() };
       const config = loadConfig({ env: services.env, args, cwd: services.cwd });
-      if (args.mode === 'rpc') return runRpc({ config, stdin: services.stdin ?? process.stdin, stdout: services.stdout ?? process.stdout, runPrompt, compactSession });
+      if (args.mode === 'rpc') return runRpc({ config, stdin: services.stdin ?? process.stdin, stdout: services.stdout ?? process.stdout, runPrompt, compactSession, approvalTimeoutMs: parseApprovalTimeout(services.env) });
       if (!config.model.apiKey) return missingAuth(args.mode);
       if (!args.prompt) {
         if (!isInteractiveTty(services)) return { exitCode: 1, stderr: 'Interactive TUI requires a TTY. Pass a prompt or use --print/--mode json for non-interactive runs.\n' };
@@ -68,7 +76,7 @@ export function createApp(services: AppServices) {
   };
 }
 
-export async function runPrompt(config: AgentConfig, prompt: string, sessionId?: string, mode: 'text' | 'json' = 'text', thinking = config.model.thinking, streamOutput?: NodeJS.WritableStream, showThinking = false, onAgentEvent?: (event: AgentStreamEvent) => void | Promise<void>, signal?: AbortSignal, approveTool?: (tool: ToolDefinition) => Promise<boolean>, reloadPlugins = false, control?: AgentRunControl, onRunProgress?: (status: RunStatus) => void | Promise<void>): Promise<AppResult> {
+export async function runPrompt(config: AgentConfig, prompt: string, sessionId?: string, mode: 'text' | 'json' = 'text', thinking = config.model.thinking, streamOutput?: NodeJS.WritableStream, showThinking = false, onAgentEvent?: (event: AgentStreamEvent) => void | Promise<void>, signal?: AbortSignal, approveTool?: ToolApprovalHandler, reloadPlugins = false, control?: AgentRunControl, onRunProgress?: (status: RunStatus) => void | Promise<void>): Promise<AppResult> {
   if (!config.model.apiKey) return missingAuth(mode);
   const registry = new ToolRegistry();
   for (const tool of createFileTools()) registry.register(tool);
@@ -95,7 +103,7 @@ export async function runPrompt(config: AgentConfig, prompt: string, sessionId?:
   hooks.register({
     beforeModelRequest: async ({ turn }) => { await telemetry.append({ type: 'model_request_start', runId, data: { turn } }); },
     beforeTool: async ({ turn, toolCall }) => { await telemetry.append({ type: 'tool_call_start', runId, data: { turn, toolName: toolCall?.name } }); },
-    afterTool: async ({ turn, toolResult }) => { await telemetry.append({ type: 'tool_result', runId, data: { turn, toolName: toolResult?.toolName, ok: toolResult?.ok, elapsedMs: toolResult?.elapsedMs, truncated: toolResult?.truncated, errorCode: toolResult?.error?.code, policy: toolResult?.policyDecision } }); },
+    afterTool: async ({ turn, toolResult }) => { await telemetry.append({ type: 'tool_result', runId, data: { turn, toolName: toolResult?.toolName, ok: toolResult?.ok, elapsedMs: toolResult?.elapsedMs, truncated: toolResult?.truncated, errorCode: toolResult?.error?.code, policy: toolResult?.policyDecision, approval: toolResult?.approval } }); },
     afterTurn: async ({ turn }) => { await telemetry.append({ type: 'turn_end', runId, data: { turn } }); },
     onStop: async ({ result }) => { await telemetry.append({ type: 'runner_stop', runId, data: { stopReason: result.stopReason, turns: result.turns, toolCalls: result.toolCalls } }); },
   });
@@ -137,7 +145,7 @@ export async function runPrompt(config: AgentConfig, prompt: string, sessionId?:
     model: withRetryingModelClient(createModelClient({ apiFormat: config.model.apiFormat, apiKey: config.model.apiKey, baseUrl: config.model.baseUrl, model: config.model.model }), {
       onRetry: async (retry) => { await telemetry.append({ type: 'model_retry', sessionId: session?.id, runId, data: { ...retry } }); },
     }),
-    tools: new ToolExecutor(registry, { workspaceRoot: config.workspaceRoot, permissionMode: config.permissionMode, previewLines: config.toolPreviewLines ?? 8, approve: approveTool, onPolicyDecision: async (decision) => { await telemetry.append({ type: 'policy_decision', runId, data: { ...decision } }); }, onFileMutation: async (mutation) => {
+    tools: new ToolExecutor(registry, { workspaceRoot: config.workspaceRoot, permissionMode: config.permissionMode, previewLines: config.toolPreviewLines ?? 8, runId, approve: approveTool, onApproval: async (request, record) => { if (session && sessionStore) await sessionStore.append(session.id, createApprovalEntry(session.id, request, record)); await telemetry.append({ type: 'approval_result', sessionId: session?.id, runId, data: { requestId: request.requestId, toolCallId: request.toolCallId, toolName: request.toolName, risk: request.risk, workspacePath: request.workspacePath, outcome: record.outcome, reason: record.reason, scope: record.scope, elapsedMs: record.elapsedMs } }); }, onPolicyDecision: async (decision) => { await telemetry.append({ type: 'policy_decision', runId, data: { ...decision } }); }, onFileMutation: async (mutation) => {
       await new ChangeJournal(config.workspaceRoot, runId, session?.id, async (record) => {
         if (session && sessionStore) await sessionStore.append(session.id, createFileMutationEntry(session.id, record));
         await telemetry.append({ type: 'file_mutation', sessionId: session?.id, runId, data: { id: record.id, operation: record.operation, relativePath: record.relativePath, beforeHash: record.beforeHash, afterHash: record.afterHash, reversible: record.reversible, artifactPath: record.artifactPath, toolCallId: record.toolCallId, undoOf: record.undoOf } });

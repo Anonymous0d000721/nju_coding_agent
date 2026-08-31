@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest';
 import { ToolExecutor } from '../../src/tools/executor.js';
 import { ToolRegistry } from '../../src/tools/registry.js';
 import { decidePolicy } from '../../src/tools/policy.js';
+import { ApprovalBroker } from '../../src/tools/approval.js';
 
 const tool = (risk: 'read' | 'write' | 'shell' | 'external', readonly = false) => ({
   name: 'demo', description: 'demo', parameters: { type: 'object' }, risk, readonly, handler: () => 'ok',
@@ -27,6 +28,30 @@ describe('unified tool policy', () => {
     expect(result.ok).toBe(false);
     expect(result.error?.code).toBe('permission_denied');
     expect(result.policyDecision).toMatchObject({ risk: 'blocked', ruleId: 'protected-path-read' });
+  });
+
+  it('routes structured approval through the executor and preserves a redacted request', async () => {
+    const requests: Awaited<ReturnType<ApprovalBroker['pendingRequests']>> = [];
+    const broker = new ApprovalBroker({ onRequest: (request) => { requests.push(request); } });
+    const registry = new ToolRegistry();
+    let executed = false;
+    registry.register({ name: 'write_file', description: 'write', parameters: { type: 'object' }, risk: 'write', readonly: false, handler: () => { executed = true; return 'ok'; } });
+    const execution = new ToolExecutor(registry, { workspaceRoot: process.cwd(), permissionMode: 'confirm', runId: 'run-approval', approve: (_tool, _decision, _args, request, context) => broker.request(request, context.signal) }).executeBatch([{ id: 'approval-1', name: 'write_file', argumentsJson: '{"path":"src/app.ts","token":"do-not-log"}' }]);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(requests[0]).toMatchObject({ runId: 'run-approval', toolCallId: 'approval-1', workspacePath: 'src/app.ts' });
+    expect(requests[0]?.args).toEqual({ path: 'src/app.ts', token: '[REDACTED]' });
+    broker.resolve(requests[0]!.requestId, { outcome: 'allow_once', reason: 'approved' }, { clientId: requests[0]!.clientId, runId: 'run-approval', toolCallId: 'approval-1' });
+    const [result] = await execution;
+    expect(executed).toBe(true);
+    expect(result).toMatchObject({ ok: true, approval: { outcome: 'allow_once', scope: 'once', reason: 'approved' }, policyDecision: { action: 'allow', approvalScope: 'once' } });
+  });
+
+  it('maps a timed-out approval to a deterministic tool failure', async () => {
+    const broker = new ApprovalBroker({ timeoutMs: 5 });
+    const registry = new ToolRegistry();
+    registry.register({ name: 'write_file', description: 'write', parameters: { type: 'object' }, risk: 'write', readonly: false, handler: () => { throw new Error('must not execute'); } });
+    const [result] = await new ToolExecutor(registry, { workspaceRoot: process.cwd(), permissionMode: 'confirm', approve: (_tool, _decision, _args, request, context) => broker.request(request, context.signal) }).executeBatch([{ id: 'approval-timeout', name: 'write_file', argumentsJson: '{}' }]);
+    expect(result).toMatchObject({ ok: false, error: { code: 'approval_timeout' }, approval: { outcome: 'timeout' } });
   });
 
   it('records a redacted policy decision for an approved mutation', async () => {

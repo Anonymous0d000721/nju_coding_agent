@@ -145,6 +145,53 @@ describe('JSON-RPC mode', () => {
     await rpc;
   });
 
+  it('pauses for an approval request while serving status and resolves only matching approvals', async () => {
+    const input = new PassThrough();
+    const output = new PassThrough();
+    let resolveRun!: () => void;
+    const runFinished = new Promise<void>((resolve) => { resolveRun = resolve; });
+    let approvalResolver: ((value: { outcome: string; requestId?: string }) => void) | undefined;
+    const rpc = runRpc({
+      config: { ...config('D:/rpc-test-approval'), permissionMode: 'confirm' }, stdin: input, stdout: output,
+      runPrompt: async (_config, _prompt, _sessionId, _mode, _thinking, _stream, _showThinking, _onAgentEvent, _signal, approveTool) => {
+        if (!approveTool) throw new Error('approval callback was not connected');
+        const decision = await approveTool({ name: 'write_file', description: 'write', parameters: { type: 'object' }, risk: 'write', readonly: false, handler: () => 'ok' }, { action: 'ask', operationClass: 'mutating', risk: 'medium', reason: 'needs approval', ruleId: 'mutation-approval' }, { path: 'src/app.ts', token: 'secret-value' }, { toolCallId: 'call-approval', toolName: 'write_file', risk: 'medium', args: { path: 'src/app.ts', token: '[REDACTED]' }, workspacePath: 'src/app.ts', reason: 'needs approval', grantKey: 'write_file:mutation-approval' }, { runId: 'run-placeholder', toolCallId: 'call-approval', workspaceRoot: 'D:/rpc-test-approval' });
+        approvalResolver?.(decision as { outcome: string; requestId?: string });
+        await runFinished;
+        return { exitCode: 0 };
+      },
+      compactSession: async () => ({ compacted: false, omittedMessages: 0, outputChars: 0 }),
+    });
+    input.write('{"jsonrpc":"2.0","id":"p","method":"prompt","params":{"text":"write"}}\n');
+    await tick();
+    let messages = lines(output);
+    const requestMessage = messages.find((message) => message.method === 'approval/request') as { params: { requestId: string; clientId: string; runId: string; toolCallId: string; args: Record<string, unknown> } };
+    expect(requestMessage).toBeDefined();
+    expect(requestMessage.params.args).toEqual({ path: 'src/app.ts', token: '[REDACTED]' });
+    const statusBefore = messages.find((message) => message.id === undefined && (message.params as { type?: string } | undefined)?.type === 'run_start');
+    expect(statusBefore).toBeDefined();
+
+    input.write('{"jsonrpc":"2.0","id":"s","method":"status"}\n');
+    await tick();
+    messages = lines(output);
+    expect(messages.find((message) => message.id === 's')?.result).toMatchObject({ state: 'running' });
+
+    input.write(JSON.stringify({ jsonrpc: '2.0', id: 'bad', method: 'approval/resolve', params: { requestId: requestMessage.params.requestId, clientId: 'wrong', runId: requestMessage.params.runId, toolCallId: requestMessage.params.toolCallId, outcome: 'allow_once' } }) + '\n');
+    await tick();
+    messages = lines(output);
+    expect(messages.find((message) => message.id === 'bad')?.error).toMatchObject({ code: -32010, message: 'approval_client_mismatch' });
+
+    input.write(JSON.stringify({ jsonrpc: '2.0', id: 'a', method: 'approval/resolve', params: { requestId: requestMessage.params.requestId, clientId: requestMessage.params.clientId, runId: requestMessage.params.runId, toolCallId: requestMessage.params.toolCallId, outcome: 'allow_once', reason: 'approved' } }) + '\n');
+    await tick();
+    messages = lines(output);
+    expect(messages.find((message) => message.id === 'a')?.result).toMatchObject({ resolved: true });
+    resolveRun();
+    await tick();
+    input.write('{"jsonrpc":"2.0","id":"q","method":"shutdown"}\n');
+    await rpc;
+    expect(approvalResolver).toBeUndefined();
+  });
+
   it('returns JSON-RPC errors for malformed JSON, unknown methods, and invalid parameters', async () => {
     const input = new PassThrough();
     const output = new PassThrough();

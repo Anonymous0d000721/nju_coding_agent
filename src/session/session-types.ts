@@ -38,6 +38,19 @@ export interface RunEndEntry extends BaseSessionEntry {
   errorSummary?: string;
 }
 
+export interface ApprovalEntry extends BaseSessionEntry {
+  type: 'approval';
+  requestId: string;
+  runId?: string;
+  toolCallId: string;
+  toolName: string;
+  risk: string;
+  outcome: import('../tools/approval.js').ApprovalOutcome;
+  scope?: 'once' | 'session';
+  reason?: string;
+  elapsedMs: number;
+}
+
 export interface ThinkingLevelChangeEntry extends BaseSessionEntry {
   type: 'thinking_level_change';
   thinkingLevel: string;
@@ -78,7 +91,7 @@ export interface SummaryEntry extends BaseSessionEntry {
   supersedesEntryIds?: string[];
 }
 
-export type SessionEntry = SessionStartEntry | MessageEntry | RunStartEntry | RunEndEntry | ThinkingLevelChangeEntry | SessionNameEntry | FileMutationEntry | SummaryEntry;
+export type SessionEntry = SessionStartEntry | MessageEntry | RunStartEntry | RunEndEntry | ApprovalEntry | ThinkingLevelChangeEntry | SessionNameEntry | FileMutationEntry | SummaryEntry;
 
 export interface AgentSession { id: string; path: string; entries: SessionEntry[]; }
 export interface SessionDisplayPage {

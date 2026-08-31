@@ -1,4 +1,5 @@
 import type { AgentMessage } from '../agent/types.js';
+import type { ApprovalRecord, ApprovalRequest, ApprovalResolution } from './approval.js';
 
 export type JsonSchema = Record<string, unknown>;
 export type ToolRisk = 'read' | 'write' | 'shell' | 'external';
@@ -36,13 +37,26 @@ export interface ToolDefinition<TArgs = unknown> {
 
 export type PermissionMode = 'yolo' | 'strict' | 'confirm';
 
+export interface ToolApprovalContext {
+  runId?: string;
+  toolCallId: string;
+  workspaceRoot: string;
+  signal?: AbortSignal;
+}
+
+export type ToolApprovalInput = Omit<ApprovalRequest, 'requestId' | 'clientId' | 'timeoutMs'> & { timeoutMs?: number };
+export type ToolApprovalHandler = (tool: ToolDefinition, decision: PolicyDecision, args: unknown, request: ToolApprovalInput, context: ToolApprovalContext) => Promise<ApprovalResolution | boolean>;
+
 export interface ToolContext {
   workspaceRoot: string;
   signal?: AbortSignal;
+  runId?: string;
   permissionMode?: PermissionMode;
   previewLines?: number;
+  approvalTimeoutMs?: number;
   toolCallId?: string;
-  approve?: (tool: ToolDefinition, decision?: PolicyDecision, args?: unknown) => Promise<boolean>;
+  approve?: ToolApprovalHandler;
+  onApproval?: (request: ApprovalRequest, record: ApprovalRecord) => Promise<void> | void;
   onPolicyDecision?: (decision: PolicyDecision & { toolName: string; elapsedMs: number; args?: Record<string, unknown> }) => Promise<void> | void;
   onFileMutation?: (mutation: { toolCallId: string; operation: 'create' | 'modify' | 'delete'; relativePath: string; beforeText?: string; afterText?: string; beforeHash?: string; afterHash?: string; preview?: string }) => Promise<void> | void;
 }
@@ -61,6 +75,7 @@ export interface ToolResult {
   artifactPath?: string;
   elapsedMs: number;
   policyDecision?: PolicyDecision;
+  approval?: ApprovalRecord;
 }
 
 export interface ToolError {
