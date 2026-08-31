@@ -153,6 +153,24 @@ describe('AgentRunner', () => {
     expect(compactions[0]).toBeGreaterThan(0);
   });
 
+  it('publishes incremental progress as turns and tools advance', async () => {
+    const progress: Array<{ phase: string; turn: number; toolCalls: number; currentToolName?: string }> = [];
+    const runner = createRunner(new FakeModel([
+      assistant({ toolCalls: [{ id: 'progress-tool', name: 'echo', argumentsJson: '{"value":"ok"}' }] }),
+      assistant({ text: 'finished' }),
+    ]));
+    const result = await runner.run('track progress', {
+      runId: 'progress-run',
+      onProgress: (snapshot) => { progress.push({ phase: snapshot.phase, turn: snapshot.turn, toolCalls: snapshot.toolCalls, currentToolName: snapshot.currentToolName }); },
+    });
+
+    expect(result.stopReason).toBe('model_finished');
+    expect(progress.map((item) => item.phase)).toEqual(['model_request', 'tool_start', 'tool_result', 'turn_end', 'model_request', 'turn_end']);
+    expect(progress[1]).toMatchObject({ phase: 'tool_start', currentToolName: 'echo', toolCalls: 0 });
+    expect(progress[2]).toMatchObject({ phase: 'tool_result', toolCalls: 1 });
+    expect(progress.at(-1)).toMatchObject({ phase: 'turn_end', turn: 2, toolCalls: 1 });
+  });
+
   it('delivers steering messages before the next model request and queued messages after an answer', async () => {
     const requests: ModelRequest[] = [];
     const queue: string[] = ['follow-up'];

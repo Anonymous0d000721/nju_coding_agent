@@ -1,4 +1,4 @@
-import type { AgentMessage, AgentRunOptions, AgentRunResult } from './types.js';
+import type { AgentMessage, AgentRunOptions, AgentRunProgress, AgentRunResult } from './types.js';
 import type { ModelClient } from '../model/model-client.js';
 import { ToolExecutor } from '../tools/executor.js';
 import { toolResultToMessage } from '../tools/types.js';
@@ -48,6 +48,27 @@ export class AgentRunner {
     let convergenceSummary: import('./convergence.js').ConvergenceSummary | undefined;
     let finalizingConvergence = false;
 
+    const progress = async (phase: AgentRunProgress['phase'], currentToolName?: string): Promise<void> => {
+      const verification = verificationEvidence.length
+        ? { plan: verificationPlan, evidence: [...verificationEvidence], status: 'stale' as const }
+        : verificationPlan.requirements.length
+          ? { plan: verificationPlan, evidence: [], status: 'unverified' as const }
+          : undefined;
+      await options.onProgress?.({
+        runId: options.runId,
+        phase,
+        turn,
+        toolCalls,
+        toolResults: [...toolResults],
+        verification,
+        compactions,
+        ...(compactions > 0 ? { lastCompactionReason: 'threshold' as const } : {}),
+        warnings: [...new Set(warnings)],
+        errors: [...new Set(errors)],
+        ...(currentToolName ? { currentToolName } : {}),
+      });
+    };
+
     let turn = 0;
     while (true) {
       if (signal?.aborted) return stop({ stopReason: 'user_cancelled', messages, turns: turn, toolCalls, toolResults, convergence: convergenceSummary, verification: verificationEvidence.length ? { plan: verificationPlan, evidence: verificationEvidence, status: 'stale' } : undefined });
@@ -64,6 +85,7 @@ export class AgentRunner {
           firstKeptEntryId: compacted.firstKeptEntryId,
           stats: compacted.stats,
         });
+        await progress('compaction');
       }
       const request = {
         systemPrompt: this.deps.systemPrompt,
@@ -71,6 +93,7 @@ export class AgentRunner {
         tools: finalizingConvergence ? [] : this.deps.toolDefinitions,
         thinking: options.thinking,
       };
+      await progress('model_request');
       await this.deps.hooks?.run('beforeModelRequest', { userPrompt, turn, signal });
       const currentTurn = turn;
       const assistant = this.deps.model.stream
@@ -81,6 +104,7 @@ export class AgentRunner {
       await this.deps.onMessage?.(assistantMessage);
       turn += 1;
       if (assistant.toolCalls.length === 0) {
+        await progress('turn_end');
         const steersAfterAnswer = options.control?.drainSteers() ?? [];
         const queued = options.control?.drainQueue() ?? [];
         for (const message of steersAfterAnswer) messages.push({ role: 'user', content: `[Steering message]\n${message}` });
@@ -105,6 +129,7 @@ export class AgentRunner {
         await this.deps.hooks?.run('beforeTool', { userPrompt, turn: currentTurn, toolCall, signal });
         const preview = formatToolCallPreview(toolCall, options.previewLines);
         await options.onStreamEvent?.({ type: 'tool_call', toolCall: { ...toolCall, preview }, preview });
+        await progress('tool_start', toolCall.name);
         if (finalizingConvergence) {
           const observation = convergence.observe(toolCall);
           const summary = convergence.summary(observation, 'stopped', results.at(-1));
@@ -136,6 +161,7 @@ export class AgentRunner {
       if (results.some((result) => result.ok && ['write_file', 'hashline_edit'].includes(result.toolName))) verificationEvidence = markVerificationStale(verificationEvidence);
       verificationEvidence = collectVerificationEvidence(results, verificationEvidence);
       toolCalls += results.length;
+      await progress('tool_result');
       if (turnWarnings.length > 0) messages.push({ role: 'user', content: `[Host convergence warning]\n${turnWarnings.join('\n')}` });
       for (const result of results) {
         await options.onStreamEvent?.({ type: 'tool_result', result });
@@ -145,6 +171,7 @@ export class AgentRunner {
         await this.deps.onMessage?.(toolMessage);
       }
       await this.deps.hooks?.run('afterTurn', { userPrompt, turn: currentTurn, signal });
+      await progress('turn_end');
       if (convergenceSummary?.status === 'stopped') return stop({ stopReason: 'convergence_stopped', messages, turns: turn, toolCalls, toolResults, verification: verificationEvidence.length ? { plan: verificationPlan, evidence: verificationEvidence, status: 'stale' } : undefined, convergence: convergenceSummary });
     }
   }

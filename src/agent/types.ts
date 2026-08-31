@@ -40,7 +40,23 @@ export interface AgentRunControl {
   drainSteers(): string[];
 }
 
+export interface AgentRunProgress {
+  runId?: string;
+  sessionId?: string;
+  phase: 'model_request' | 'tool_start' | 'tool_result' | 'compaction' | 'turn_end';
+  turn: number;
+  toolCalls: number;
+  toolResults: ToolResult[];
+  verification?: VerificationSummary;
+  compactions: number;
+  lastCompactionReason?: 'threshold' | 'overflow' | 'manual';
+  warnings: string[];
+  errors: string[];
+  currentToolName?: string;
+}
+
 export interface AgentRunOptions {
+  runId?: string;
   /** Optional wall-clock safety limit for one run. */
   maxDurationMs?: number;
   previewLines?: number;
@@ -52,6 +68,7 @@ export interface AgentRunOptions {
   thinking?: ThinkingConfig;
   onStreamEvent?: (event: AgentStreamEvent) => void | Promise<void>;
   onCompaction?: (compaction: { summary: string; omittedMessages: number; coveredEntryIds: string[]; firstKeptEntryId?: string; stats: { sourceChars: number; outputChars: number; omittedToolOutputChars: number } }) => void | Promise<void>;
+  onProgress?: (progress: AgentRunProgress) => void | Promise<void>;
   goalGate?: boolean;
   control?: AgentRunControl;
 }

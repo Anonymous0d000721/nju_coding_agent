@@ -1,6 +1,6 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import type { AgentRunResult, VerificationSummary } from '../agent/types.js';
+import type { AgentRunProgress, AgentRunResult, VerificationSummary } from '../agent/types.js';
 import type { ConvergenceSummary } from '../agent/convergence.js';
 import type { ToolResult } from '../tools/types.js';
 import { redact } from '../shared/redact.js';
@@ -39,6 +39,7 @@ export interface RunStatus {
   warnings: string[];
   errors: string[];
   convergence?: ConvergenceSummary;
+  currentToolName?: string;
 }
 
 export interface RunReport extends RunStatus {
@@ -80,6 +81,27 @@ export function createIdleRunStatus(context: RunStatusContext, runId = ''): RunS
 
 export function createRunningRunStatus(runId: string, context: RunStatusContext): RunStatus {
   return { ...createIdleRunStatus(context, runId), state: 'running' };
+}
+
+export function createProgressRunStatus(runId: string, progress: AgentRunProgress, context: RunStatusContext): RunStatus {
+  const status = createRunStatus(runId, {
+    stopReason: 'model_finished',
+    messages: [],
+    turns: progress.turn,
+    toolCalls: progress.toolCalls,
+    toolResults: progress.toolResults,
+    verification: progress.verification,
+    compactions: progress.compactions,
+    lastCompactionReason: progress.lastCompactionReason,
+    warnings: progress.warnings,
+    errors: progress.errors,
+  }, context);
+  return {
+    ...status,
+    state: 'running',
+    stopReason: undefined,
+    ...(progress.currentToolName ? { currentToolName: progress.currentToolName } : {}),
+  };
 }
 
 export function createRunStatus(runId: string, result: AgentRunResult, context: RunStatusContext): RunStatus {
@@ -190,6 +212,7 @@ function normalizeRunReport(value: unknown, fallbackRunId: string): RunReport | 
     warnings: arrayOfStrings(source.warnings),
     errors: arrayOfStrings(source.errors),
     ...(source.convergence !== undefined ? { convergence: source.convergence as ConvergenceSummary } : {}),
+    ...(typeof source.currentToolName === 'string' ? { currentToolName: source.currentToolName } : {}),
   };
 }
 
