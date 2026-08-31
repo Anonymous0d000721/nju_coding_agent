@@ -13,6 +13,8 @@ NJU_AGENT_MODEL
 NJU_AGENT_API_FORMAT
 NJU_AGENT_THINKING_LEVEL
 NJU_AGENT_TOOL_PREVIEW_LINES
+NJU_AGENT_MAX_DURATION_MS
+NJU_AGENT_MAX_TOOL_CONCURRENCY
 ```
 
 支持 OpenAI Chat、OpenAI Responses 和 Anthropic Messages。未设置思考级别时使用 `medium`；推理显示与模型思考强度是两个独立设置。
@@ -27,7 +29,12 @@ TUI 默认展示工具活动的前 8 行，可通过 `NJU_AGENT_TOOL_PREVIEW_LIN
 
 ## Agent 运行预算
 
-Agent 不设置固定轮数或工具调用数量上限，会在模型完成、取消或错误时结束；上下文过长时由本地 deterministic compaction 压缩后继续运行。长时间运行应由用户取消或外部运行时预算控制。
+Agent 不设置固定轮数或工具调用数量上限，会在模型完成、取消或错误时结束；上下文过长时由本地 deterministic compaction 压缩后继续运行。
+
+- `NJU_AGENT_MAX_DURATION_MS`：单次运行的 wall-clock 上限，默认 600000，范围 1–1800000；超时通过 `AbortSignal` 同时取消模型请求和工具边界，最终 stop reason 为 `budget_exhausted`。
+- `NJU_AGENT_MAX_TOOL_CONCURRENCY`：同一模型回合中独立工具的最大并发数，默认 4，范围 1–8；结果仍按模型返回的 tool-call 顺序回填和持久化。
+
+预算是宿主侧可靠性保护，不是操作系统资源沙箱；PowerShell、插件和外部 MCP 仍继承当前用户权限。
 
 ## 会话、记忆与记录
 

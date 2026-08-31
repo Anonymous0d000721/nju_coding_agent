@@ -115,6 +115,39 @@ describe('AgentRunner', () => {
     expect(result.messages.map((message) => message.role)).toEqual(['user', 'assistant']);
   });
 
+  it('ends with an explicit budget reason when the runtime deadline aborts the model', async () => {
+    const model: ModelClient = {
+      complete: (_request, signal) => new Promise<AssistantTurn>((resolve, reject) => {
+        const timer = setTimeout(() => resolve(assistant({ text: 'too late' })), 500);
+        signal?.addEventListener('abort', () => { clearTimeout(timer); reject(new Error('model aborted')); }, { once: true });
+      }),
+    };
+    const result = await createRunner(model).run('bounded task', { maxDurationMs: 25 });
+
+    expect(result.stopReason).toBe('budget_exhausted');
+    expect(result.budget).toEqual({ maxDurationMs: 25, exhausted: true });
+    expect(result.elapsedMs).toBeLessThan(300);
+  });
+
+  it('limits independent tool concurrency while preserving model call order', async () => {
+    const registry = new ToolRegistry();
+    let active = 0;
+    let peak = 0;
+    registry.register({
+      name: 'slow_read', description: 'test', parameters: { type: 'object' }, risk: 'read', readonly: true,
+      handler: async (args) => { active += 1; peak = Math.max(peak, active); await new Promise((resolve) => setTimeout(resolve, 20)); active -= 1; return args; },
+    });
+    const executor = new ToolExecutor(registry, { workspaceRoot: process.cwd() });
+    const results = await executor.executeBatch([
+      { id: 'one', name: 'slow_read', argumentsJson: '{"value":1}' },
+      { id: 'two', name: 'slow_read', argumentsJson: '{"value":2}' },
+      { id: 'three', name: 'slow_read', argumentsJson: '{"value":3}' },
+    ], undefined, 2);
+
+    expect(peak).toBe(2);
+    expect(results.map((result) => result.toolCallId)).toEqual(['one', 'two', 'three']);
+  });
+
   it('requires command verification before ending a fix request when GoalGate is enabled', async () => {
     const runner = createRunner(new FakeModel([
       assistant({ text: 'done too early' }),
@@ -154,21 +187,22 @@ describe('AgentRunner', () => {
   });
 
   it('publishes incremental progress as turns and tools advance', async () => {
-    const progress: Array<{ phase: string; turn: number; toolCalls: number; currentToolName?: string }> = [];
+    const progress: Array<{ phase: string; turn: number; toolCalls: number; currentToolName?: string; elapsedMs?: number }> = [];
     const runner = createRunner(new FakeModel([
       assistant({ toolCalls: [{ id: 'progress-tool', name: 'echo', argumentsJson: '{"value":"ok"}' }] }),
       assistant({ text: 'finished' }),
     ]));
     const result = await runner.run('track progress', {
       runId: 'progress-run',
-      onProgress: (snapshot) => { progress.push({ phase: snapshot.phase, turn: snapshot.turn, toolCalls: snapshot.toolCalls, currentToolName: snapshot.currentToolName }); },
+      onProgress: (snapshot) => { progress.push({ phase: snapshot.phase, turn: snapshot.turn, toolCalls: snapshot.toolCalls, currentToolName: snapshot.currentToolName, elapsedMs: snapshot.elapsedMs }); },
     });
 
     expect(result.stopReason).toBe('model_finished');
-    expect(progress.map((item) => item.phase)).toEqual(['model_request', 'tool_start', 'tool_result', 'turn_end', 'model_request', 'turn_end']);
+    expect(progress.map((item) => item.phase)).toEqual(['model_request', 'tool_start', 'tool_result', 'turn_end', 'model_request', 'turn_end', 'stop']);
     expect(progress[1]).toMatchObject({ phase: 'tool_start', currentToolName: 'echo', toolCalls: 0 });
     expect(progress[2]).toMatchObject({ phase: 'tool_result', toolCalls: 1 });
-    expect(progress.at(-1)).toMatchObject({ phase: 'turn_end', turn: 2, toolCalls: 1 });
+    expect(progress.at(-2)).toMatchObject({ phase: 'turn_end', turn: 2, toolCalls: 1 });
+    expect(progress.at(-1)).toMatchObject({ phase: 'stop', turn: 2, toolCalls: 1, elapsedMs: expect.any(Number) });
   });
 
   it('delivers steering messages before the next model request and queued messages after an answer', async () => {

@@ -32,6 +32,7 @@ import { McpManager } from '../mcp/client.js';
 import { createStdioTransport } from '../mcp/stdio.js';
 import { registerMcpTools } from '../mcp/registry-adapter.js';
 import { loadUserPlugins, pluginTools } from '../plugins/loader.js';
+import { resolveWorkspacePath } from '../tools/path-guard.js';
 import { runRpc } from './rpc.js';
 import type { AgentMessage, AgentRunControl, AgentRunProgress, AgentRunResult, AgentStreamEvent } from '../agent/types.js';
 import type { ToolApprovalHandler, ToolDefinition } from '../tools/types.js';
@@ -94,7 +95,8 @@ export async function runPrompt(config: AgentConfig, prompt: string, sessionId?:
   const mcpServers = config.projectTrusted ? config.mcpServers : [];
   try {
     for (const server of mcpServers) {
-      await mcp.connect(server.name, createStdioTransport({ command: server.command, args: server.args, cwd: server.cwd, env: server.env }));
+      const serverCwd = await resolveWorkspacePath(config.workspaceRoot, server.cwd ?? '.');
+      await mcp.connect(server.name, createStdioTransport({ command: server.command, args: server.args, cwd: serverCwd.absolutePath, env: server.env }));
     }
     registerMcpTools(mcp, registry);
   } catch (error) {
