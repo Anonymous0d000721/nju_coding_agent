@@ -8,6 +8,18 @@
 
 ## 阶段任务
 
+### 可复现入口
+
+```powershell
+npm run baseline   # 在临时副本中证明故意缺陷，退出码为 0，JSON status=expected_failed
+npm run lifecycle  # 离线验证 running/cancelled/resumed/completed 状态关系
+npm run demo       # build + 持久化演示；重复执行不会重复推进已运行任务
+npm run accept     # 独立验收，不依赖测试断言
+npm run reset      # 恢复 runtime/orders.json，使下一轮可重复
+```
+
+`baseline` 不修改仓库中的源码、测试或 fixture；它在临时副本中注入两个已知缺陷并运行测试。
+
 ### Phase 1：调查
 
 阅读 `src/order-service.ts`、`tests/`、`fixtures/orders.json` 和脚本。运行：
@@ -31,6 +43,7 @@ npm run typecheck
 npm run reset
 npm run demo
 npm run demo
+npm run accept
 ```
 
 两次 demo 都应能正常运行；第二次会基于已更新的持久化状态继续测试。需要新一轮时再次 `npm run reset`。运行 `npm run reset` 后，fixture 始终恢复到同一个版本 7 的起点。

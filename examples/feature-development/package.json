@@ -2,6 +2,6 @@
   "name": "inventory-reservation-service",
   "private": true,
   "type": "module",
-  "scripts": { "build": "tsc", "test": "vitest run", "typecheck": "tsc --noEmit", "demo": "npm run build && node scripts/demo.mjs", "reset": "node scripts/reset.mjs" },
+  "scripts": { "build": "tsc", "test": "vitest run", "typecheck": "tsc --noEmit", "demo": "npm run build && node scripts/demo.mjs", "baseline": "node scripts/baseline.mjs", "accept": "npm run build && node scripts/accept.mjs", "lifecycle": "node scripts/lifecycle.mjs", "reset": "node scripts/reset.mjs" },
   "devDependencies": { "typescript": "^5.0.0", "vitest": "^4.0.0" }
 }

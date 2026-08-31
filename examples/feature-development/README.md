@@ -2,6 +2,18 @@
 
 这是一个可恢复的两阶段功能开发任务，项目自带旧 API、固定 fixture 和故意未实现的新 API。
 
+## 可复现入口
+
+```powershell
+npm run baseline   # 记录 3 个预期失败的新功能测试，退出码为 0，JSON status=expected_failed
+npm run lifecycle  # 离线验证 running/cancelled/resumed/completed 状态关系
+npm run demo       # build + 演示；未实现时输出 exercise_pending 而不是基础设施失败
+npm run accept     # 独立验收；未实现时输出 exercise_pending
+npm run reset      # 恢复 runtime/inventory.json
+```
+
+`baseline` 与 `accept` 都保留 `reserveBatch` 未实现这一练习边界；agent 完成功能后，同一入口会自动升级为真实通过结果。
+
 ## Phase 1：理解现有系统
 
 阅读 `src/inventory.ts`、`tests/`、`fixtures/inventory.json` 和脚本，运行：
@@ -30,9 +42,12 @@ npm run typecheck
 
 ```powershell
 npm test
+npm run typecheck
+npm run build
 npm run demo
 npm run reset
 npm run demo
+npm run accept
 ```
 
 `reset` 恢复固定库存和空审计日志；可反复创建新 session 测试。恢复旧 session 时要求 agent 说明已完成的调查，避免从头重复。

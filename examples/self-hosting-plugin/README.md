@@ -2,6 +2,20 @@
 
 这是一个可恢复的插件开发任务，不是单次生成一个示例文件。目标是在受信任 workspace 中实现一个安全的本地 MCP manifest adaptor，并通过主项目 loader、ToolExecutor 和 RPC/TUI 流程验证。
 
+## 可复现入口
+
+```powershell
+npm run baseline   # 验证合法 manifest fixture，JSON status=passed
+npm run lifecycle  # 离线验证 running/cancelled/resumed/completed 状态关系
+npm run demo       # 在临时 workspace 读取合法 manifest 并列出工具
+npm run accept     # 独立验证合法、越界、重复名和外部字段拒绝
+npm run typecheck  # Node.js 语法检查
+npm run build      # 无依赖构建检查
+npm run reset      # 删除 runtime 与测试输出
+```
+
+`fixtures/` 是只读输入；所有 demo/accept 临时文件都写入系统临时目录。
+
 ## 阶段任务
 
 ### Phase 1：调查与设计
@@ -49,6 +63,6 @@ npm run dev -- --print "读取 manifest 并列出可用工具"
 
 ### 重置与重复测试
 
-`fixtures/` 是只读输入；用 `scripts/reset.mjs` 清理生成的临时 manifest 和测试输出。每轮都可从 Phase 1 开始，或恢复任意中断 session。
+用 `scripts/reset.mjs` 清理生成的临时 manifest 和测试输出。每轮都可从 Phase 1 开始，或恢复任意中断 session；根目录 `npm run verify:examples` 会自动重复 reset 并检查 fixture、测试和插件源码哈希不变。
 
 验收：主项目全量测试、插件专项测试、typecheck 均通过，并能解释 trust gating、标准 ToolExecutor、schema 校验和 cache-busting reload 的作用。

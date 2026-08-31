@@ -2,6 +2,6 @@
   "name": "nju-mcp-adaptor-example",
   "private": true,
   "type": "module",
-  "scripts": { "test": "vitest run", "reset": "node scripts/reset.mjs" },
+  "scripts": { "build": "node scripts/build.mjs", "test": "vitest run", "typecheck": "node scripts/typecheck.mjs", "demo": "node scripts/demo.mjs", "baseline": "node scripts/baseline.mjs", "accept": "node scripts/accept.mjs", "lifecycle": "node scripts/lifecycle.mjs", "reset": "node scripts/reset.mjs" },
   "devDependencies": { "vitest": "^4.0.0" }
 }
