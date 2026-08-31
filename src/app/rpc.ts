@@ -2,8 +2,14 @@ import { createInterface } from 'node:readline';
 import type { Readable } from 'node:stream';
 import { randomUUID } from 'node:crypto';
 import { JsonlSessionStore, sessionName } from '../session/jsonl-store.js';
+import { createSessionNameEntry, createThinkingLevelChangeEntry } from '../session/entries.js';
 import type { AgentConfig } from '../shared/config.js';
 import type { AgentRunControl, AgentStreamEvent } from '../agent/types.js';
+import { clampThinkingLevel } from '../model/thinking.js';
+import type { ThinkingLevel } from '../model/model-client.js';
+import { MemoryPlugin } from '../context/memory.js';
+import { loadUserPlugins } from '../plugins/loader.js';
+import { ProjectTrustStore } from '../shared/trust.js';
 import type { AppResult } from './app.js';
 import { ChangeJournal } from '../telemetry/journal.js';
 import { createIdleRunStatus, createRunningRunStatus, type RunStatus, type RunStatusContext } from '../telemetry/report.js';
@@ -32,6 +38,7 @@ interface RpcDeps {
     approveTool?: undefined,
     reloadPlugins?: boolean,
     control?: AgentRunControl,
+    onRunProgress?: (status: RunStatus) => void | Promise<void>,
   ) => Promise<AppResult>;
   compactSession: (config: AgentConfig, sessionId: string) => Promise<{ compacted: boolean; omittedMessages: number; outputChars: number }>;
 }
@@ -46,6 +53,8 @@ export async function runRpc(deps: RpcDeps): Promise<AppResult> {
   let sessionId = deps.config.session.id;
   let activeRun: { runId: string; controller: AbortController; control: AgentRunControl; done: Promise<void>; status: RunStatus } | undefined;
   let latestStatus: RunStatus | undefined;
+  let reloadPlugins = false;
+  let reasoningDisplay = false;
   let shuttingDown = false;
 
   const error = (id: RpcRequest['id'], code: number, message: string, data?: unknown): void => {
@@ -54,6 +63,24 @@ export async function runRpc(deps: RpcDeps): Promise<AppResult> {
   };
   const response = (id: RpcRequest['id'], result: unknown): void => write({ jsonrpc: '2.0', id, result });
   const event = (type: string, data: unknown, runId?: string): void => write({ jsonrpc: '2.0', method: 'event', params: { type, ...(runId ? { runId } : {}), data } });
+  const idleStatus = (): RunStatus => createIdleRunStatus(statusContext(deps.config, sessionId));
+  const setActiveStatus = (runId: string, status: RunStatus): void => {
+    if (activeRun?.runId !== runId) return;
+    activeRun.status = status;
+    event('run_status', { sessionId, status }, runId);
+  };
+  const createSession = async (): Promise<{ id: string; name?: string }> => {
+    const session = await store.create({ cwd: deps.config.workspaceRoot, model: deps.config.model.model, appVersion: '0.1.0' });
+    sessionId = session.id;
+    latestStatus = undefined;
+    return { id: session.id, name: sessionName(session.entries) };
+  };
+  const renameSession = async (name: string): Promise<{ sessionId: string; name: string }> => {
+    const target = sessionId ? await store.open(sessionId) : await store.create({ cwd: deps.config.workspaceRoot, model: deps.config.model.model, appVersion: '0.1.0' });
+    sessionId = target.id;
+    await store.append(target.id, createSessionNameEntry(target.id, name.slice(0, 120)));
+    return { sessionId: target.id, name: name.slice(0, 120) };
+  };
 
   const handle = async (request: RpcRequest): Promise<void> => {
     if (request.jsonrpc !== '2.0' || typeof request.method !== 'string') {
@@ -107,7 +134,7 @@ export async function runRpc(deps: RpcDeps): Promise<AppResult> {
           const runningStatus = createRunningRunStatus(runId, statusContext(deps.config, sessionId));
           activeRun = { runId, controller, control, done: Promise.resolve(), status: runningStatus };
           event('run_start', { sessionId, status: runningStatus }, runId);
-          const done = deps.runPrompt(deps.config, text, sessionId, 'text', deps.config.model.thinking, undefined, false, async (streamEvent) => emitAgentEvent(event, streamEvent, runId), controller.signal, undefined, false, control)
+          const done = deps.runPrompt(deps.config, text, sessionId, 'text', deps.config.model.thinking, undefined, false, async (streamEvent) => emitAgentEvent(event, streamEvent, runId), controller.signal, undefined, reloadPlugins, control, (status) => setActiveStatus(runId, status))
             .then((result) => {
               if (result.sessionId) sessionId = result.sessionId;
               const status = result.status ?? { ...createRunningRunStatus(runId, statusContext(deps.config, sessionId)), state: result.exitCode === 0 ? 'completed' as const : 'failed' as const };
@@ -132,22 +159,94 @@ export async function runRpc(deps: RpcDeps): Promise<AppResult> {
           return;
         }
         case 'slash': {
-          const command = stringParam(params, 'command').trim();
-          if (command === '/compact') {
+          const rawCommand = stringParam(params, 'command').trim();
+          const [command, ...argumentParts] = rawCommand.split(/\s+/);
+          const argument = argumentParts.join(' ').trim();
+          if (command === '/quit' || command === '/exit') {
+            reply({ shuttingDown: true });
+            shuttingDown = true;
+            const runToStop = activeRun;
+            runToStop?.controller.abort();
+            if (runToStop) await runToStop.done;
+            input.close();
+          } else if (command === '/help') {
+            reply({ commands: ['/help', '/new', '/trust', '/name <name>', '/rename <session_name>', '/fork', '/sessions', '/session', '/resume <id>', '/model [id]', '/effort [level]', '/reasoning [on|off]', '/thinking [on|off]', '/memory', '/reload', '/compact', '/status', '/diff', '/undo', '/quit', '/exit'] });
+          } else if (command === '/new') {
+            if (activeRun) throw rpcError(-32000, 'Cannot change session while a run is active');
+            const created = await createSession();
+            reply({ sessionId: created.id, name: created.name });
+            event('session_updated', { sessionId, action: 'created' });
+          } else if (command === '/trust') {
+            new ProjectTrustStore().trust(deps.config.workspaceRoot);
+            deps.config.projectTrusted = true;
+            reply({ trusted: true, workspace: deps.config.workspaceRoot });
+          } else if (command === '/name' || command === '/rename') {
+            if (!argument) throw rpcError(-32602, `Usage: ${command} <session_name>`);
+            if (activeRun) throw rpcError(-32000, 'Cannot rename a session while a run is active');
+            const named = await renameSession(argument);
+            reply(named);
+            event('session_updated', { ...named, action: 'renamed' });
+          } else if (command === '/fork') {
+            if (activeRun) throw rpcError(-32000, 'Cannot fork a session while a run is active');
+            if (!sessionId) throw rpcError(-32001, 'No active session');
+            const child = await store.fork(sessionId);
+            sessionId = child.id;
+            latestStatus = undefined;
+            reply({ sessionId, name: sessionName(child.entries) });
+            event('session_updated', { sessionId, action: 'forked' });
+          } else if (command === '/sessions') {
+            reply({ sessions: await store.list() });
+          } else if (command === '/session') {
+            const current = sessionId ? await store.open(sessionId) : undefined;
+            reply({ sessionId, name: current ? sessionName(current.entries) : undefined, runId: activeRun?.runId, running: Boolean(activeRun), model: deps.config.model.model, effort: deps.config.model.thinking.level, reasoningDisplay, permissionMode: deps.config.permissionMode });
+          } else if (command === '/resume') {
+            if (activeRun) throw rpcError(-32000, 'Cannot resume a session while a run is active');
+            if (!argument) throw rpcError(-32602, 'Usage: /resume <session_id>');
+            const session = await store.open(argument);
+            sessionId = session.id;
+            latestStatus = undefined;
+            reply({ sessionId, name: sessionName(session.entries), entries: session.entries.length });
+            event('session_updated', { sessionId, action: 'resumed' });
+          } else if (command === '/model') {
+            if (!argument) reply({ model: deps.config.model.model, effort: deps.config.model.thinking.level });
+            else {
+              deps.config.model.model = argument;
+              deps.config.model.thinking = { ...deps.config.model.thinking, level: clampThinkingLevel(deps.config.model.thinking.level, deps.config.model.thinking.map) };
+              reply({ model: deps.config.model.model, effort: deps.config.model.thinking.level });
+            }
+          } else if (command === '/effort') {
+            if (!argument) reply({ effort: deps.config.model.thinking.level });
+            else {
+              if (!isThinkingLevel(argument)) throw rpcError(-32602, `Invalid effort: ${argument}`);
+              const level = clampThinkingLevel(argument, deps.config.model.thinking.map);
+              deps.config.model.thinking = { ...deps.config.model.thinking, level };
+              if (sessionId && deps.config.session.enabled) await store.append(sessionId, createThinkingLevelChangeEntry(sessionId, level));
+              reply({ effort: level });
+            }
+          } else if (command === '/reasoning' || command === '/thinking') {
+            if (!argument) reply({ reasoningDisplay });
+            else {
+              if (argument !== 'on' && argument !== 'off') throw rpcError(-32602, `Usage: ${command} [on|off]`);
+              reasoningDisplay = argument === 'on';
+              reply({ reasoningDisplay });
+            }
+          } else if (command === '/memory') {
+            reply(new MemoryPlugin({ workspaceRoot: deps.config.workspaceRoot, rootDir: deps.config.memory.rootDir, enabled: deps.config.memory.enabled }).status());
+          } else if (command === '/reload') {
+            const plugins = await loadUserPlugins(deps.config.workspaceRoot, deps.config.projectTrusted, true);
+            reloadPlugins = true;
+            reply({ reloaded: plugins.length, nextRun: true });
+          } else if (command === '/compact') {
             if (!sessionId) throw rpcError(-32001, 'No active session');
             reply(await deps.compactSession(deps.config, sessionId));
+          } else if (command === '/status') {
+            reply(activeRun?.status ?? latestStatus ?? idleStatus());
           } else if (command === '/diff') {
             reply({ text: await new ChangeJournal(deps.config.workspaceRoot).formatDiff(sessionId ? { sessionId } : {}) });
           } else if (command === '/undo') {
             reply(await new ChangeJournal(deps.config.workspaceRoot).undoLast(sessionId ? { sessionId } : {}));
-          } else if (command === '/status') {
-            reply(activeRun?.status ?? latestStatus ?? createIdleRunStatus(statusContext(deps.config, sessionId)));
-          } else if (command === '/session') {
-            reply({ sessionId, runId: activeRun?.runId, running: Boolean(activeRun) });
-          } else if (command === '/help') {
-            reply({ commands: ['/compact', '/status', '/session', '/diff', '/undo', '/help'] });
           } else {
-            throw rpcError(-32602, `Unsupported slash command: ${command}`);
+            throw rpcError(-32602, `Unsupported slash command: ${rawCommand}`);
           }
           return;
         }
@@ -191,6 +290,10 @@ function emitAgentEvent(write: (type: string, data: unknown, runId?: string) => 
 function stringParam(params: Record<string, unknown>, name: string): string {
   if (typeof params[name] !== 'string' || !params[name].trim()) throw rpcError(-32602, `Parameter '${name}' must be a non-empty string`);
   return params[name] as string;
+}
+
+function isThinkingLevel(value: string): value is ThinkingLevel {
+  return ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'].includes(value);
 }
 
 class RpcError extends Error { constructor(readonly code: number, message: string) { super(message); } }

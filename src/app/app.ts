@@ -26,14 +26,14 @@ import { SkillRegistry } from '../context/skills.js';
 import { createTodoTools } from '../plan/todo-tools.js';
 import { TelemetryStore } from '../telemetry/store.js';
 import { ChangeJournal } from '../telemetry/journal.js';
-import { createRunReport, createRunStatus, writeRunReport, type RunStatus } from '../telemetry/report.js';
+import { createProgressRunStatus, createRunReport, createRunStatus, createRunningRunStatus, writeRunReport, type RunStatus } from '../telemetry/report.js';
 import { withRetryingModelClient } from '../model/retry.js';
 import { McpManager } from '../mcp/client.js';
 import { createStdioTransport } from '../mcp/stdio.js';
 import { registerMcpTools } from '../mcp/registry-adapter.js';
 import { loadUserPlugins, pluginTools } from '../plugins/loader.js';
 import { runRpc } from './rpc.js';
-import type { AgentMessage, AgentRunControl, AgentRunResult, AgentStreamEvent } from '../agent/types.js';
+import type { AgentMessage, AgentRunControl, AgentRunProgress, AgentRunResult, AgentStreamEvent } from '../agent/types.js';
 import type { ToolDefinition } from '../tools/types.js';
 import type { ThinkingLevel } from '../model/model-client.js';
 import { clampThinkingLevel } from '../model/thinking.js';
@@ -68,7 +68,7 @@ export function createApp(services: AppServices) {
   };
 }
 
-export async function runPrompt(config: AgentConfig, prompt: string, sessionId?: string, mode: 'text' | 'json' = 'text', thinking = config.model.thinking, streamOutput?: NodeJS.WritableStream, showThinking = false, onAgentEvent?: (event: AgentStreamEvent) => void | Promise<void>, signal?: AbortSignal, approveTool?: (tool: ToolDefinition) => Promise<boolean>, reloadPlugins = false, control?: AgentRunControl): Promise<AppResult> {
+export async function runPrompt(config: AgentConfig, prompt: string, sessionId?: string, mode: 'text' | 'json' = 'text', thinking = config.model.thinking, streamOutput?: NodeJS.WritableStream, showThinking = false, onAgentEvent?: (event: AgentStreamEvent) => void | Promise<void>, signal?: AbortSignal, approveTool?: (tool: ToolDefinition) => Promise<boolean>, reloadPlugins = false, control?: AgentRunControl, onRunProgress?: (status: RunStatus) => void | Promise<void>): Promise<AppResult> {
   if (!config.model.apiKey) return missingAuth(mode);
   const registry = new ToolRegistry();
   for (const tool of createFileTools()) registry.register(tool);
@@ -168,6 +168,16 @@ export async function runPrompt(config: AgentConfig, prompt: string, sessionId?:
         await sessionStore.append(session.id, createSummaryEntry(session.id, compaction.summary, compaction.coveredEntryIds, 'threshold', { algorithm: 'deterministic-v1', firstKeptEntryId: compaction.firstKeptEntryId, stats: compaction.stats }));
         await telemetry.append({ type: 'compaction_end', sessionId: session.id, runId, data: { omittedMessages: compaction.omittedMessages, coveredEntryIds: compaction.coveredEntryIds, stats: compaction.stats } });
       } : undefined,
+      runId,
+      onProgress: async (progress: AgentRunProgress) => {
+        await onRunProgress?.(createProgressRunStatus(runId, progress, {
+          workspace: config.workspaceRoot,
+          sessionId: session?.id,
+          model: config.model.model,
+          effort: thinking.level,
+          permissionMode: config.permissionMode,
+        }));
+      },
     }, signal);
     if (session && sessionStore) await sessionStore.append(session.id, createRunEndEntry(session.id, result));
     const harnessDiagnostics = await harness.afterRun({ workspaceRoot: config.workspaceRoot, sessionId: session?.id, signal }, result);
@@ -200,9 +210,16 @@ export async function runPrompt(config: AgentConfig, prompt: string, sessionId?:
     await mcp.disconnectAll();
     const message = redact(error instanceof Error ? error.message : String(error), { extraSecrets: [config.model.apiKey] });
     await telemetry.append({ type: 'run_error', sessionId: session?.id, runId, data: { message } });
+    const failedStatus = { ...createRunningRunStatus(runId, {
+      workspace: config.workspaceRoot,
+      sessionId: session?.id,
+      model: config.model.model,
+      effort: thinking.level,
+      permissionMode: config.permissionMode,
+    }), state: 'failed' as const, stopReason: 'fatal_error' as const, errors: [message] };
     return mode === 'json'
-      ? { exitCode: 3, stdout: `${JSON.stringify({ type: 'run_error', level: 'error', data: { message } })}\n` }
-      : { exitCode: 3, stderr: `${message}\n` };
+      ? { exitCode: 3, stdout: `${JSON.stringify({ type: 'run_error', level: 'error', data: { message, status: failedStatus } })}\n`, sessionId: session?.id, status: failedStatus }
+      : { exitCode: 3, stderr: `${message}\n`, sessionId: session?.id, status: failedStatus };
   }
 }
 

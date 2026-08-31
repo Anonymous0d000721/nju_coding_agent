@@ -6,7 +6,8 @@ import { describe, expect, it } from 'vitest';
 import { runRpc } from '../../src/app/rpc.js';
 import { createRunReport, writeRunReport } from '../../src/telemetry/report.js';
 import type { AgentConfig } from '../../src/shared/config.js';
-import type { AgentStreamEvent } from '../../src/agent/types.js';
+import type { AgentRunProgress, AgentStreamEvent } from '../../src/agent/types.js';
+import { createIdleRunStatus, createProgressRunStatus } from '../../src/telemetry/report.js';
 
 function config(rootDir: string): AgentConfig {
   return {
@@ -103,6 +104,45 @@ describe('JSON-RPC mode', () => {
     expect(seenPrompt).toBe('fix it');
     expect(messages.some((message) => message.params && (message.params as { type?: string }).type === 'message_delta')).toBe(true);
     expect(messages.some((message) => message.params && (message.params as { type?: string }).type === 'run_end')).toBe(true);
+  });
+
+  it('publishes incremental active status and exposes the TUI command set through slash', async () => {
+    const input = new PassThrough();
+    const output = new PassThrough();
+    let finish!: () => void;
+    const finished = new Promise<void>((resolve) => { finish = resolve; });
+    const progress: AgentRunProgress = {
+      runId: 'run-progress', sessionId: 'session-progress', phase: 'tool_start', turn: 1, toolCalls: 0, toolResults: [],
+      compactions: 0, warnings: [], errors: [], currentToolName: 'read_file',
+    };
+    const rpc = runRpc({
+      config: config('D:/rpc-test-progress'), stdin: input, stdout: output,
+      runPrompt: async (_config, _prompt, _sessionId, _mode, _thinking, _stream, _showThinking, _onAgentEvent, _signal, _approve, _reload, _control, onRunProgress) => {
+        onRunProgress?.(createProgressRunStatus('run-progress', progress, { workspace: 'D:/rpc-test-progress', sessionId: 'session-progress', model: 'test-model', effort: 'medium', permissionMode: 'yolo' }));
+        await finished;
+        return { exitCode: 0, sessionId: 'session-progress' };
+      },
+      compactSession: async () => ({ compacted: false, omittedMessages: 0, outputChars: 0 }),
+    });
+
+    input.write('{"jsonrpc":"2.0","id":"p","method":"prompt","params":{"text":"inspect"}}\n');
+    await tick();
+    input.write('{"jsonrpc":"2.0","id":"s","method":"status"}\n');
+    await tick();
+    const statusMessages = lines(output);
+    const status = statusMessages.find((message) => message.id === 's')?.result as { state: string; turns: number; currentToolName?: string };
+    expect(status).toMatchObject({ state: 'running', turns: 1, currentToolName: 'read_file' });
+
+    input.write('{"jsonrpc":"2.0","id":"h","method":"slash","params":{"command":"/help"}}\n');
+    await tick();
+    const help = lines(output).find((message) => message.id === 'h')?.result as { commands: string[] };
+    expect(help.commands).toContain('/rename <session_name>');
+    expect(help.commands).toContain('/reload');
+    expect(help.commands).toContain('/status');
+
+    finish();
+    input.write('{"jsonrpc":"2.0","id":"q","method":"shutdown"}\n');
+    await rpc;
   });
 
   it('returns JSON-RPC errors for malformed JSON, unknown methods, and invalid parameters', async () => {

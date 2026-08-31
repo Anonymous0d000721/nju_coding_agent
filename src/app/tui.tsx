@@ -36,7 +36,7 @@ export const TUI_COMMANDS = [
   { name: '/new', description: 'start a new session' }, { name: '/fork', description: 'fork current session' }, { name: '/trust', description: 'trust this workspace' }, { name: '/name', description: 'name current session' }, { name: '/sessions', description: 'list sessions' },
   { name: '/resume', description: 'select a session' }, { name: '/rename', description: 'rename current session' }, { name: '/model', description: 'select a model' },
   { name: '/effort', description: 'select reasoning effort' }, { name: '/reasoning', description: 'toggle reasoning display' },
-  { name: '/thinking', description: 'alias for /reasoning' }, { name: '/memory', description: 'show local memory status' }, { name: '/reload', description: 'reload user and MCP tools' }, { name: '/compact', description: 'compact current session' }, { name: '/status', description: 'show latest run evidence' }, { name: '/diff', description: 'show tracked file changes' }, { name: '/undo', description: 'undo the latest tracked file change' },
+  { name: '/thinking', description: 'alias for /reasoning' }, { name: '/memory', description: 'show local memory status' }, { name: '/reload', description: 'reload user plugins for the next run' }, { name: '/compact', description: 'compact current session' }, { name: '/status', description: 'show latest run evidence' }, { name: '/diff', description: 'show tracked file changes' }, { name: '/undo', description: 'undo the latest tracked file change' },
   { name: '/quit', description: 'exit TUI' }, { name: '/exit', description: 'exit TUI' },
 ] as const;
 
@@ -230,7 +230,7 @@ function TuiApp({ config, runPrompt, compactSession, memoryStatus }: TuiOptions)
     append({ role: 'user', text: raw }); setStatus('running'); const signal = new AbortController(); controller.current = signal;
     try {
       setRunStatus(createRunningRunStatus('', { ...statusContext, sessionId, model: config.model.model, effort: config.model.thinking.level }));
-      const result = await runPrompt(config, raw, sessionId, 'text', config.model.thinking, undefined, showReasoning, (event) => setMessages((items) => applyAgentEvent(items, event, showReasoning)), signal.signal, requestApproval, reloadPlugins.current, runControl.current);
+      const result = await runPrompt(config, raw, sessionId, 'text', config.model.thinking, undefined, showReasoning, (event) => setMessages((items) => applyAgentEvent(items, event, showReasoning)), signal.signal, requestApproval, reloadPlugins.current, runControl.current, (nextStatus) => setRunStatus(nextStatus));
       reloadPlugins.current = false;
       if (result.status) setRunStatus(result.status);
       if (result.sessionId) {
@@ -275,7 +275,14 @@ function TuiApp({ config, runPrompt, compactSession, memoryStatus }: TuiOptions)
       return;
     }
     if (key.pageDown) { setTranscriptOffset((offset) => Math.max(0, offset - transcriptPageSize(terminalRows))); return; }
-    if (status === 'running') { if (key.ctrl && key.return) submitWhileRunning('steer'); else if (key.return) submitWhileRunning('queue'); return; }
+    if (status === 'running') {
+      if (key.return && editor.text.trim() === '/status') {
+        updateEditor((state) => createEditorState(state.history));
+        appendSystem(formatRunStatus(runStatus));
+      } else if (key.ctrl && key.return) submitWhileRunning('steer');
+      else if (key.return) submitWhileRunning('queue');
+      return;
+    }
     if (status === 'cancelling') return;
     if ((key.shift && key.return) || (key.ctrl && value === 'j')) { updateEditor((state) => insertText(state, '\n')); return; }
     if (completion.length && (key.upArrow || key.downArrow)) { setCompletionIndex((index) => Math.max(0, Math.min(completion.length - 1, index + (key.upArrow ? -1 : 1)))); return; }
@@ -349,7 +356,8 @@ export function formatRunStatus(status: RunStatus): string {
   const warnings = status.warnings.length ? `\nwarnings: ${status.warnings.join(' | ')}` : '';
   const errors = status.errors.length ? `\nerrors: ${status.errors.join(' | ')}` : '';
   const stopReason = status.stopReason ?? (status.state === 'idle' ? '(not started)' : '(running)');
-  return `run: ${status.state}\nworkspace: ${status.workspace}\nsession: ${status.sessionId ?? '(new)'}\nmodel: ${status.model}\neffort: ${status.effort}\npermission: ${status.permissionMode}\nturns: ${status.turns} · tool calls: ${status.toolCalls} (${status.toolSuccesses} ok, ${status.toolFailures} failed)\nverification: ${status.verification.status}\ncompactions: ${status.compactions}${status.lastCompactionReason ? ` · ${status.lastCompactionReason}` : ''}\nstop reason: ${stopReason}\nchanged files: ${files}${commandLine}${warnings}${errors}`;
+  const currentTool = status.currentToolName ? `\ncurrent tool: ${status.currentToolName}` : '';
+  return `run: ${status.state}\nworkspace: ${status.workspace}\nsession: ${status.sessionId ?? '(new)'}\nmodel: ${status.model}\neffort: ${status.effort}\npermission: ${status.permissionMode}\nturns: ${status.turns} · tool calls: ${status.toolCalls} (${status.toolSuccesses} ok, ${status.toolFailures} failed)${currentTool}\nverification: ${status.verification.status}\ncompactions: ${status.compactions}${status.lastCompactionReason ? ` · ${status.lastCompactionReason}` : ''}\nstop reason: ${stopReason}\nchanged files: ${files}${commandLine}${warnings}${errors}`;
 }
 
 export function editorLinesWithCursor(editor: EditorState): Array<{ before: string; at: string; after: string }> {
