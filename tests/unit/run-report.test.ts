@@ -45,6 +45,14 @@ describe('run report', () => {
     expect(report).toMatchObject({ commands: [], filesChanged: [], warnings: [], errors: [], verification: { status: 'not_required' } });
   });
 
+  it('exposes convergence_stopped as a distinct terminal state', () => {
+    const status = createRunStatus('run-convergence', {
+      stopReason: 'convergence_stopped', turns: 4, toolCalls: 4, messages: [],
+    }, { workspace: 'workspace', model: 'test-model', effort: 'medium', permissionMode: 'yolo' });
+
+    expect(status).toMatchObject({ state: 'convergence_stopped', stopReason: 'convergence_stopped' });
+  });
+
   it('summarizes tool evidence and redacts the goal', async () => {
     const report = createRunReport('run-1', 'fix sk-test-secret', {
       stopReason: 'model_finished', turns: 2, toolCalls: 1,

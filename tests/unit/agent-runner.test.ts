@@ -148,6 +148,21 @@ describe('AgentRunner', () => {
     expect(results.map((result) => result.toolCallId)).toEqual(['one', 'two', 'three']);
   });
 
+  it('aborts timed tools and returns a structured timeout result', async () => {
+    const registry = new ToolRegistry();
+    let observedAbort = false;
+    registry.register({
+      name: 'slow_tool', description: 'test', parameters: { type: 'object' }, risk: 'read', readonly: true, timeoutMs: 25,
+      handler: async (_args, context) => new Promise((_resolve, reject) => {
+        context.signal?.addEventListener('abort', () => { observedAbort = true; reject(new Error('handler observed abort')); }, { once: true });
+      }),
+    });
+    const [result] = await new ToolExecutor(registry, { workspaceRoot: process.cwd() }).executeBatch([{ id: 'timeout', name: 'slow_tool', argumentsJson: '{}' }]);
+
+    expect(result).toMatchObject({ ok: false, error: { code: 'tool_timeout' } });
+    expect(observedAbort).toBe(true);
+  });
+
   it('requires command verification before ending a fix request when GoalGate is enabled', async () => {
     const runner = createRunner(new FakeModel([
       assistant({ text: 'done too early' }),

@@ -20,7 +20,7 @@ export interface RunStatus {
   runId: string;
   workspace: string;
   sessionId?: string;
-  state: 'idle' | 'running' | 'completed' | 'failed' | 'cancelled';
+  state: 'idle' | 'running' | 'completed' | 'failed' | 'cancelled' | 'convergence_stopped';
   model: string;
   effort: string;
   permissionMode: string;
@@ -132,7 +132,7 @@ export function createRunStatus(runId: string, result: AgentRunResult, context: 
     runId,
     workspace: context.workspace,
     sessionId: context.sessionId,
-    state: result.stopReason === 'user_cancelled' || result.stopReason === 'budget_exhausted' ? 'cancelled' : result.stopReason === 'fatal_error' ? 'failed' : 'completed',
+    state: result.stopReason === 'user_cancelled' || result.stopReason === 'budget_exhausted' ? 'cancelled' : result.stopReason === 'fatal_error' ? 'failed' : result.stopReason === 'convergence_stopped' ? 'convergence_stopped' : 'completed',
     model: context.model,
     effort: context.effort,
     permissionMode: context.permissionMode,
@@ -267,12 +267,13 @@ function normalizeVerification(value: unknown): VerificationSummary {
 function stateFromStopReason(stopReason: AgentRunResult['stopReason'] | undefined): RunStatus['state'] {
   if (stopReason === 'user_cancelled' || stopReason === 'budget_exhausted') return 'cancelled';
   if (stopReason === 'fatal_error') return 'failed';
+  if (stopReason === 'convergence_stopped') return 'convergence_stopped';
   return stopReason ? 'completed' : 'idle';
 }
 function numberOrZero(value: unknown): number { return typeof value === 'number' && Number.isFinite(value) ? value : 0; }
 function arrayOfRecords(value: unknown): Record<string, unknown>[] { return Array.isArray(value) ? value.filter((item): item is Record<string, unknown> => asRecord(item) !== undefined) : []; }
 function arrayOfStrings(value: unknown): string[] { return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : []; }
-function isRunState(value: unknown): value is RunStatus['state'] { return value === 'idle' || value === 'running' || value === 'completed' || value === 'failed' || value === 'cancelled'; }
+function isRunState(value: unknown): value is RunStatus['state'] { return value === 'idle' || value === 'running' || value === 'completed' || value === 'failed' || value === 'cancelled' || value === 'convergence_stopped'; }
 function isStopReason(value: unknown): value is AgentRunResult['stopReason'] { return value === 'completed' || value === 'model_finished' || value === 'user_cancelled' || value === 'budget_exhausted' || value === 'context_overflow' || value === 'convergence_stopped' || value === 'fatal_error'; }
 function isCompactionReason(value: unknown): value is NonNullable<RunStatus['lastCompactionReason']> { return value === 'threshold' || value === 'overflow' || value === 'manual'; }
 function isVerificationStatus(value: unknown): value is VerificationSummary['status'] { return value === 'verified' || value === 'failed' || value === 'blocked' || value === 'unverified' || value === 'stale' || value === 'not_required'; }

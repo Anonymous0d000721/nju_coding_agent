@@ -93,7 +93,7 @@ export class ToolExecutor {
     }
 
     try {
-      const value = await tool.handler(args, { ...this.ctx, toolCallId: call.id, signal: signal ?? this.ctx.signal });
+      const value = await runToolHandler(tool, args, { ...this.ctx, toolCallId: call.id, signal: signal ?? this.ctx.signal }, signal ?? this.ctx.signal);
       const observation = boundedObservation(value);
       return { toolCallId: call.id, toolName: call.name, ok: true, content: observation.content, details: value, preview: formatToolResultPreview(call, value, { ok: true }, this.ctx.previewLines), truncated: observation.truncated, elapsedMs: Date.now() - started, policyDecision, ...(approval ? { approval } : {}) };
     } catch (error) {
@@ -101,6 +101,41 @@ export class ToolExecutor {
     }
   }
 
+}
+
+async function runToolHandler(tool: ToolDefinition, args: unknown, context: ToolContext, signal?: AbortSignal): Promise<unknown> {
+  if (!tool.timeoutMs && !signal) return tool.handler(args, context);
+  if (signal?.aborted) throw Object.assign(new Error('Tool execution was cancelled.'), { code: 'user_cancelled' });
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let timeout = false;
+  const controller = new AbortController();
+  const forwardAbort = () => controller.abort(signal?.reason);
+  signal?.addEventListener('abort', forwardAbort, { once: true });
+  let cancel: (() => void) | undefined;
+  const cancellationPromise = signal ? new Promise<never>((_, reject) => {
+    cancel = () => reject(Object.assign(new Error('Tool execution was cancelled.'), { code: 'user_cancelled' }));
+    signal.addEventListener('abort', cancel, { once: true });
+  }) : undefined;
+  const timeoutPromise = tool.timeoutMs ? new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      timeout = true;
+      const error = Object.assign(new Error(`Tool ${tool.name} timed out.`), { code: 'tool_timeout', details: { toolName: tool.name, timeoutMs: tool.timeoutMs } });
+      controller.abort(error);
+      reject(error);
+    }, Math.max(1, tool.timeoutMs!));
+  }) : undefined;
+  try {
+    const operation = tool.handler(args, { ...context, signal: controller.signal });
+    return await Promise.race([operation, cancellationPromise, timeoutPromise].filter((value): value is Promise<unknown> => value !== undefined));
+  } catch (error) {
+    if (timeout) throw error;
+    if (signal?.aborted) throw Object.assign(new Error('Tool execution was cancelled.'), { code: 'user_cancelled' });
+    throw error;
+  } finally {
+    if (timer) clearTimeout(timer);
+    signal?.removeEventListener('abort', forwardAbort);
+    if (signal && cancel) signal.removeEventListener('abort', cancel);
+  }
 }
 
 function cancelledFailure(call: ToolCall, previewLines?: number): ToolResult {
