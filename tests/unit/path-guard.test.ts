@@ -17,6 +17,7 @@ describe('workspace path guard', () => {
     await expect(resolveWorkspacePath(root, '\\\\server\\share\\outside.txt')).rejects.toMatchObject({ code: 'path_outside_workspace' });
     expect(() => assertSafeWritePath('C:\\outside.txt')).toThrowError(/workspace-relative/);
     expect(() => assertSafeWritePath('bad\u0000name')).toThrowError(/NUL/);
+    expect(() => assertSafeWritePath('notes.txt:secret')).toThrowError(/alternate data streams/);
   });
 
   it('rejects symlinked files and directories that resolve outside the workspace', async () => {
@@ -39,5 +40,8 @@ describe('workspace path guard', () => {
       expect(isSensitiveRelativePath(value)).toBe(true);
     }
     expect(isSensitiveRelativePath('.env.example')).toBe(false);
+    expect(isSensitiveRelativePath('config.txt ')).toBe(false);
+    expect(isSensitiveRelativePath('.git ')).toBe(true);
+    expect(isSensitiveRelativePath('node_modules ')).toBe(true);
   });
 });

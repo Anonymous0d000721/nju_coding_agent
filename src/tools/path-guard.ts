@@ -32,6 +32,9 @@ export async function resolveWorkspacePath(workspaceRoot: string, inputPath = '.
 export function assertSafeWritePath(relativePath: string): void {
   if (relativePath.includes('\u0000')) throw Object.assign(new Error('Writing a path containing a NUL character is not allowed'), { code: 'invalid_path' });
   if (path.isAbsolute(relativePath)) throw Object.assign(new Error('Write paths must be workspace-relative'), { code: 'invalid_path' });
+  if (hasWindowsAlternateDataStream(relativePath)) {
+    throw Object.assign(new Error('Windows alternate data streams are not supported'), { code: 'invalid_path' });
+  }
   if (isSensitiveRelativePath(relativePath)) {
     throw Object.assign(new Error('Writing a protected path is not allowed'), { code: 'sensitive_path' });
   }
@@ -40,8 +43,9 @@ export function assertSafeWritePath(relativePath: string): void {
 export function isSensitiveRelativePath(relativePath: string): boolean {
   const normalized = normalizeRelative(relativePath).replace(/^\.\//, '').toLowerCase();
   const segments = normalized.split('/').filter(Boolean);
-  if (segments.includes('.git') || segments.includes('.nju-agent') || segments.includes('node_modules')) return true;
-  return segments.some((segment) => {
+  const canonicalSegments = segments.map((segment) => segment.replace(/[ .]+$/g, ''));
+  if (canonicalSegments.includes('.git') || canonicalSegments.includes('.nju-agent') || canonicalSegments.includes('node_modules')) return true;
+  return canonicalSegments.some((segment) => {
     if (segment === '.env.example') return false;
     if (segment === '.env' || segment.startsWith('.env.')) return true;
     if (segment.endsWith('.pem') || segment.endsWith('.key') || segment.endsWith('.p12') || segment.endsWith('.pfx') || segment.endsWith('.crt') || segment.endsWith('.cer')) return true;
@@ -52,6 +56,10 @@ export function isSensitiveRelativePath(relativePath: string): boolean {
 
 export function normalizeRelative(relativePath: string): string {
   return relativePath.replace(/\\/g, '/') || '.';
+}
+
+function hasWindowsAlternateDataStream(relativePath: string): boolean {
+  return relativePath.replace(/\\/g, '/').split('/').some((segment, index) => segment.includes(':') && !(index === 0 && /^[a-z]:$/i.test(segment)));
 }
 
 export function isInsidePath(root: string, candidate: string): boolean {

@@ -125,8 +125,11 @@ async function runToolHandler(tool: ToolDefinition, args: unknown, context: Tool
     }, Math.max(1, tool.timeoutMs!));
   }) : undefined;
   try {
-    const operation = tool.handler(args, { ...context, signal: controller.signal });
-    return await Promise.race([operation, cancellationPromise, timeoutPromise].filter((value): value is Promise<unknown> => value !== undefined));
+    const operation = Promise.resolve(tool.handler(args, { ...context, signal: controller.signal }));
+    const races: Array<Promise<unknown>> = [operation];
+    if (cancellationPromise) races.push(cancellationPromise);
+    if (timeoutPromise) races.push(timeoutPromise);
+    return await Promise.race(races);
   } catch (error) {
     if (timeout) throw error;
     if (signal?.aborted) throw Object.assign(new Error('Tool execution was cancelled.'), { code: 'user_cancelled' });
