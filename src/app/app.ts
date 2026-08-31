@@ -86,24 +86,29 @@ export async function runPrompt(config: AgentConfig, prompt: string, sessionId?:
   for (const tool of createTodoTools(`${config.workspaceRoot}/.nju-agent/todo.json`)) registry.register(tool);
   const userPlugins = await loadUserPlugins(config.workspaceRoot, config.projectTrusted, reloadPlugins);
   for (const tool of pluginTools(userPlugins)) registry.register(tool);
-  const mcp = new McpManager();
+  const sessionStore = config.session.enabled ? new JsonlSessionStore(`${config.workspaceRoot}/.nju-agent`) : undefined;
+  const telemetry = new TelemetryStore(`${config.workspaceRoot}/.nju-agent/logs/events.jsonl`, config.telemetry, config.model.apiKey ? [config.model.apiKey] : []);
+  const runId = randomUUID();
+  const recordMcpEvent = (type: 'mcp_connect' | 'mcp_disconnect', data: Record<string, unknown>) => telemetry.append({ type, sessionId: sessionStore ? sessionId : undefined, runId, data });
+  const mcp = new McpManager(config.mcpTimeoutMs);
+  const mcpServers = config.projectTrusted ? config.mcpServers : [];
   try {
-    for (const server of config.mcpServers) {
+    for (const server of mcpServers) {
       await mcp.connect(server.name, createStdioTransport({ command: server.command, args: server.args, cwd: server.cwd, env: server.env }));
     }
     registerMcpTools(mcp, registry);
   } catch (error) {
+    await telemetry.append({ type: 'mcp_error', runId, data: { message: redact(error instanceof Error ? error.message : String(error), { extraSecrets: Object.values(config.model).filter((value): value is string => typeof value === 'string') }) } });
     await mcp.disconnectAll();
     throw error;
   }
-  const sessionStore = config.session.enabled ? new JsonlSessionStore(`${config.workspaceRoot}/.nju-agent`) : undefined;
-  const telemetry = new TelemetryStore(`${config.workspaceRoot}/.nju-agent/logs/events.jsonl`, config.telemetry, config.model.apiKey ? [config.model.apiKey] : []);
-  const runId = randomUUID();
+  if (config.mcpServers.length > 0 && !config.projectTrusted) await telemetry.append({ type: 'mcp_skipped_untrusted', runId, data: { serverCount: config.mcpServers.length } });
+  for (const server of mcp.serversStatus()) await recordMcpEvent('mcp_connect', { server: server.name, toolCount: server.toolCount, pid: server.pid });
   const hooks = new HookRegistry();
   hooks.register({
     beforeModelRequest: async ({ turn }) => { await telemetry.append({ type: 'model_request_start', runId, data: { turn } }); },
     beforeTool: async ({ turn, toolCall }) => { await telemetry.append({ type: 'tool_call_start', runId, data: { turn, toolName: toolCall?.name } }); },
-    afterTool: async ({ turn, toolResult }) => { await telemetry.append({ type: 'tool_result', runId, data: { turn, toolName: toolResult?.toolName, ok: toolResult?.ok, elapsedMs: toolResult?.elapsedMs, truncated: toolResult?.truncated, errorCode: toolResult?.error?.code, policy: toolResult?.policyDecision, approval: toolResult?.approval } }); },
+    afterTool: async ({ turn, toolResult }) => { await telemetry.append({ type: 'tool_result', runId, data: { turn, toolName: toolResult?.toolName, mcpServer: toolResult?.toolName ? mcpServerForTool(toolResult.toolName) : undefined, ok: toolResult?.ok, elapsedMs: toolResult?.elapsedMs, truncated: toolResult?.truncated, errorCode: toolResult?.error?.code, policy: toolResult?.policyDecision, approval: toolResult?.approval } }); },
     afterTurn: async ({ turn }) => { await telemetry.append({ type: 'turn_end', runId, data: { turn } }); },
     onStop: async ({ result }) => { await telemetry.append({ type: 'runner_stop', runId, data: { stopReason: result.stopReason, turns: result.turns, toolCalls: result.toolCalls } }); },
   });
@@ -212,9 +217,11 @@ export async function runPrompt(config: AgentConfig, prompt: string, sessionId?:
     const rendered = mode === 'json'
       ? `${JSON.stringify({ type: 'run_end', level: 'info', data: { ...result, status } })}\n`
       : renderRunResult(result, !streamedText);
+    for (const server of mcp.serversStatus()) await recordMcpEvent('mcp_disconnect', { server: server.name, toolCount: server.toolCount, pid: server.pid, reason: 'run_end' });
     await mcp.disconnectAll();
     return { exitCode: 0, stdout: streamedText && rendered ? `\n${rendered}` : rendered, sessionId: session?.id, status };
   } catch (error) {
+    for (const server of mcp.serversStatus()) await recordMcpEvent('mcp_disconnect', { server: server.name, toolCount: server.toolCount, pid: server.pid, reason: 'run_error' });
     await mcp.disconnectAll();
     const message = redact(error instanceof Error ? error.message : String(error), { extraSecrets: [config.model.apiKey] });
     await telemetry.append({ type: 'run_error', sessionId: session?.id, runId, data: { message } });
@@ -229,6 +236,12 @@ export async function runPrompt(config: AgentConfig, prompt: string, sessionId?:
       ? { exitCode: 3, stdout: `${JSON.stringify({ type: 'run_error', level: 'error', data: { message, status: failedStatus } })}\n`, sessionId: session?.id, status: failedStatus }
       : { exitCode: 3, stderr: `${message}\n`, sessionId: session?.id, status: failedStatus };
   }
+}
+
+function mcpServerForTool(toolName: string): string | undefined {
+  if (!toolName.startsWith('mcp__')) return undefined;
+  const separator = toolName.indexOf('__', 6);
+  return separator > 0 ? toolName.slice(5, separator) : undefined;
 }
 
 export function memoryStatus(config: AgentConfig): ReturnType<MemoryPlugin['status']> {

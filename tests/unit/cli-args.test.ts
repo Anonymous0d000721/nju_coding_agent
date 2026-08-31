@@ -35,9 +35,11 @@ describe('parseArgs', () => {
 describe('loadConfig', () => {
   it('loads opt-in MCP server configuration and rejects malformed entries', () => {
     const args = parseArgs([]);
-    const config = loadConfig({ cwd: process.cwd(), args, env: { NJU_AGENT_MCP_SERVERS: '[{"name":"demo","command":"node","args":["server.js"]}]' } });
+    const config = loadConfig({ cwd: process.cwd(), args, env: { NJU_AGENT_MCP_SERVERS: '[{"name":"demo","command":"node","args":["server.js"]}]', NJU_AGENT_MCP_TIMEOUT_MS: '1200' } });
     expect(config.mcpServers).toEqual([{ name: 'demo', command: 'node', args: ['server.js'], cwd: undefined, env: undefined }]);
+    expect(config.mcpTimeoutMs).toBe(1200);
     expect(() => loadConfig({ cwd: process.cwd(), args, env: { NJU_AGENT_MCP_SERVERS: '{bad' } })).toThrow('Invalid NJU_AGENT_MCP_SERVERS');
+    expect(() => loadConfig({ cwd: process.cwd(), args, env: { NJU_AGENT_MCP_TIMEOUT_MS: '0' } })).toThrow('Invalid NJU_AGENT_MCP_TIMEOUT_MS');
   });
 
   it('loads model config from environment without exposing secrets in shape', () => {

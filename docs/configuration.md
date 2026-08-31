@@ -39,13 +39,13 @@ Agent 不设置固定轮数或工具调用数量上限，会在模型完成、�
 
 ## MCP
 
-`NJU_AGENT_MCP_SERVERS` 使用 JSON 数组配置 stdio 服务，例如：
+`NJU_AGENT_MCP_SERVERS` 使用 JSON 数组配置 stdio 服务，例如；MCP 配置只在项目 Trust 已建立时生效，未信任工作区会跳过启动外部进程：
 
 ```json
 [{"name":"local-tools","command":"node","args":["server.mjs"]}]
 ```
 
-外部服务只在明确配置后启动，发现的工具仍经过主机的 schema、风险、权限、超时和脱敏处理。
+外部服务只在明确配置且工作区已 Trust 后启动，发现的工具仍经过主机的 schema、风险、权限、超时和脱敏处理。默认单次 MCP 请求超时 30 秒，可用 `NJU_AGENT_MCP_TIMEOUT_MS` 调整为 1–300000 毫秒；超时或取消会关闭该服务，避免继续使用失效会话。
 
 ## Hashline 编辑
 

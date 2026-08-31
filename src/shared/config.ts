@@ -16,6 +16,7 @@ export interface AgentConfig {
   session: { enabled: boolean; id?: string };
   memory: { enabled: boolean; rootDir?: string };
   mcpServers: Array<{ name: string; command: string; args?: string[]; cwd?: string; env?: Record<string, string> }>;
+  mcpTimeoutMs?: number;
 }
 
 export function loadConfig(input: { env: NodeJS.ProcessEnv; args: CliArgs; cwd: string }): AgentConfig {
@@ -42,13 +43,14 @@ export function loadConfig(input: { env: NodeJS.ProcessEnv; args: CliArgs; cwd: 
     session: { enabled: !input.args.noSession, id: input.args.session },
     memory: { enabled: parseBoolean(envValue('NJU_AGENT_MEMORY_ENABLED'), true), rootDir: envValue('NJU_AGENT_MEMORY_DIR') },
     mcpServers: parseMcpServers(envValue('NJU_AGENT_MCP_SERVERS')),
+    mcpTimeoutMs: parsePositiveInteger(envValue('NJU_AGENT_MCP_TIMEOUT_MS'), 30_000, 300_000, 'NJU_AGENT_MCP_TIMEOUT_MS'),
   };
 }
 
-function parsePositiveInteger(value: string | undefined, fallback: number, max: number): number {
+function parsePositiveInteger(value: string | undefined, fallback: number, max: number, name = 'NJU_AGENT_TOOL_PREVIEW_LINES'): number {
   if (value === undefined) return fallback;
   const parsed = Number(value);
-  if (!Number.isInteger(parsed) || parsed < 1 || parsed > max) throw new Error(`Invalid NJU_AGENT_TOOL_PREVIEW_LINES: ${value}. Expected an integer from 1 to ${max}`);
+  if (!Number.isInteger(parsed) || parsed < 1 || parsed > max) throw new Error(`Invalid ${name}: ${value}. Expected an integer from 1 to ${max}`);
   return parsed;
 }
 
