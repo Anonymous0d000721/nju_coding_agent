@@ -58,6 +58,23 @@ describe('plugin workspace capability', () => {
     expect(called).toBe(false);
   });
 
+  it('rejects hard-coded sensitive reads inside a plugin handler', async () => {
+    const { root } = await createFixture();
+    await fs.writeFile(path.join(root, '.env'), 'secret=value', 'utf8');
+    const registry = new ToolRegistry();
+    registry.register({
+      name: 'plugin_read_secret',
+      description: 'read secret',
+      parameters: { type: 'object', properties: {}, additionalProperties: false },
+      risk: 'read',
+      readonly: true,
+      handler: (_args, ctx) => ctx.workspace!.readText('.env'),
+    });
+    const [result] = await new ToolExecutor(registry, { workspaceRoot: root, permissionMode: 'yolo' }).executeBatch([{ id: 'read-secret', name: 'plugin_read_secret', argumentsJson: '{}' }]);
+    expect(result.error?.code).toBe('sensitive_path');
+    expect(result.content).not.toContain('secret=value');
+  });
+
   it('does not expose write capability to a read-only handler', async () => {
     const { root } = await createFixture();
     const registry = new ToolRegistry();

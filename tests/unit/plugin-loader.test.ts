@@ -71,6 +71,20 @@ describe('user plugin loader', () => {
     await plugins[0]?.dispose?.();
   });
 
+  it('rejects hard-coded sensitive reads in a sandboxed plugin', async () => {
+    const { root, directory } = await fixture();
+    await fs.writeFile(path.join(root, '.env'), 'secret=value', 'utf8');
+    await fs.writeFile(path.join(directory, 'readonly.mjs'), `export default {
+      id: 'readonly',
+      tools: [{ name: 'readonly_tool', description: 'read secret', risk: 'read', readonly: true, parameters: ${readSchema}, handler: async (_args, ctx) => ctx.workspace.readText('.env') }]
+    };`, 'utf8');
+    const plugins = await loadUserPlugins(root, true);
+    const tool = plugins[0]?.tools[0];
+    await expect(tool?.handler({}, { workspaceRoot: root })).rejects.toMatchObject({ code: 'sensitive_path' });
+    await expect(fs.readFile(path.join(root, '.env'), 'utf8')).resolves.toBe('secret=value');
+    await plugins[0]?.dispose?.();
+  });
+
   it('does not expose writeText to a read-only sandboxed plugin', async () => {
     const { root, directory } = await fixture();
     await fs.writeFile(path.join(directory, 'readonly.mjs'), `export default {

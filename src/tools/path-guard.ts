@@ -29,6 +29,14 @@ export async function resolveWorkspacePath(workspaceRoot: string, inputPath = '.
   };
 }
 
+export function assertSafeReadPath(relativePath: string): void {
+  if (relativePath.includes('\u0000')) throw Object.assign(new Error('Reading a path containing a NUL character is not allowed'), { code: 'invalid_path' });
+  if (path.isAbsolute(relativePath)) throw Object.assign(new Error('Read paths must be workspace-relative'), { code: 'invalid_path' });
+  if (isSensitiveRelativePath(relativePath)) {
+    throw Object.assign(new Error('Reading a protected path is not allowed'), { code: 'sensitive_path' });
+  }
+}
+
 export function assertSafeWritePath(relativePath: string): void {
   if (relativePath.includes('\u0000')) throw Object.assign(new Error('Writing a path containing a NUL character is not allowed'), { code: 'invalid_path' });
   if (path.isAbsolute(relativePath)) throw Object.assign(new Error('Write paths must be workspace-relative'), { code: 'invalid_path' });

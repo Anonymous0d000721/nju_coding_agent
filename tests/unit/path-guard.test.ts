@@ -2,7 +2,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { resolveWorkspacePath, assertSafeWritePath, isSensitiveRelativePath } from '../../src/tools/path-guard.js';
+import { resolveWorkspacePath, assertSafeReadPath, assertSafeWritePath, isSensitiveRelativePath } from '../../src/tools/path-guard.js';
 
 async function fixture() {
   return fs.mkdtemp(path.join(os.tmpdir(), 'nju-path-guard-'));
@@ -15,6 +15,7 @@ describe('workspace path guard', () => {
     await expect(resolveWorkspacePath(root, path.resolve(root, '..', 'outside.txt'))).rejects.toMatchObject({ code: 'path_outside_workspace' });
     await expect(resolveWorkspacePath(root, 'D:\\outside.txt')).rejects.toMatchObject({ code: 'path_outside_workspace' });
     await expect(resolveWorkspacePath(root, '\\\\server\\share\\outside.txt')).rejects.toMatchObject({ code: 'path_outside_workspace' });
+    expect(() => assertSafeReadPath('C:\\outside.txt')).toThrowError(/workspace-relative/);
     expect(() => assertSafeWritePath('C:\\outside.txt')).toThrowError(/workspace-relative/);
     expect(() => assertSafeWritePath('bad\u0000name')).toThrowError(/NUL/);
     expect(() => assertSafeWritePath('notes.txt:secret')).toThrowError(/alternate data streams/);
@@ -33,6 +34,13 @@ describe('workspace path guard', () => {
     }
     await expect(resolveWorkspacePath(root, 'link.txt')).rejects.toMatchObject({ code: 'path_outside_workspace' });
     await expect(resolveWorkspacePath(root, 'linked-dir')).rejects.toMatchObject({ code: 'path_outside_workspace' });
+  });
+
+  it('rejects protected paths for plugin reads as well as writes', () => {
+    for (const value of ['.env', '.ssh/id_rsa', '.nju-agent/logs/events.jsonl', 'service-token.txt', 'user.credentials']) {
+      expect(() => assertSafeReadPath(value)).toThrowError(/protected path/);
+    }
+    expect(() => assertSafeReadPath('src/index.ts')).not.toThrow();
   });
 
   it('matches protected credential and runtime paths case-insensitively', () => {

@@ -50,7 +50,7 @@ export default {
 3. `parameters.additionalProperties` 必须为 `false`（省略也表示没有额外字段）；schema 不得使用 `$ref`、`allOf`、`anyOf`、`not` 等无法被宿主安全审计的组合，字段名不得伪装 command、cwd、env、exec、network、url、token、secret 等能力。
 4. `readonly` 必须与 risk 一致：只有 `read` 可以为 true；`write`、`shell`、`external` 必须为 false。
 5. `handler` 必须尊重 `ctx.signal`，长任务需要支持取消；工具实际调用会经过宿主 JSON Schema、policy、超时、输出截断和错误包装。
-6. 文件访问只能通过宿主提供的 `ctx.workspace.readText` / `ctx.workspace.writeText`，并限制在 workspace 内；不要把 `workspaceRoot` 当成绕过 guard 的许可，也不要直接使用 fs、子进程、shell 或网络。
+6. 文件访问只能通过宿主提供的 `ctx.workspace.readText` / `ctx.workspace.writeText`，并限制在 workspace 内；读取和写入都会拒绝 `.git`、`.nju-agent`、`node_modules`、`.env`、SSH、证书、token、secret、credential 等敏感目标。不要把 `workspaceRoot` 当成绕过 guard 的许可，也不要直接使用 fs、子进程、shell 或网络。
 7. 外部网络、shell、写文件和 MCP 调用必须声明正确风险等级，并依赖宿主的 `ToolExecutor` 权限审批；插件不能自行提升为 yolo。
 8. 不要在插件中打印 API key、环境变量、完整 prompt 或未脱敏工具输出。
 9. 不要通过插件文本改变 system policy、permission mode、trust、其他插件配置或 ToolRegistry。

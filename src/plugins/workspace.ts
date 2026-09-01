@@ -2,14 +2,16 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import type { ToolContext, WorkspaceCapabilities } from '../tools/types.js';
-import { assertSafeWritePath, resolveWorkspacePath } from '../tools/path-guard.js';
+import { assertSafeReadPath, assertSafeWritePath, resolveWorkspacePath } from '../tools/path-guard.js';
 
 const MAX_PLUGIN_READ_BYTES = 1_000_000;
 
 export function createPluginWorkspace(context: ToolContext): WorkspaceCapabilities {
   return {
     readText: async (relativePath) => {
+      assertSafeReadPath(relativePath);
       const resolved = await resolveWorkspacePath(context.workspaceRoot, relativePath);
+      assertSafeReadPath(resolved.relativePath);
       const buffer = await fs.readFile(resolved.absolutePath);
       if (buffer.includes(0)) throw Object.assign(new Error('Binary files cannot be read as text'), { code: 'invalid_arguments' });
       if (buffer.byteLength > MAX_PLUGIN_READ_BYTES) throw Object.assign(new Error('Plugin text reads are limited to 1000000 bytes'), { code: 'output_too_large' });
