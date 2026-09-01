@@ -28,12 +28,10 @@ npm run dev -- --print "检查项目并运行测试"
 
 ## 仓库与检查
 
-匿名仓库地址：https://anonymous.4open.science/r/nju_coding_agent-0E040D000721
+仓库地址：https://github.com/Anonymous0d000721/nju_coding_agent
 
 ```powershell
 npm run typecheck
 npm test -- --run
 npm run build
 ```
-
-预算和并发上限是宿主侧可靠性保护，不是操作系统资源沙箱；外部 MCP、PowerShell 和插件仍继承当前用户权限。nju-agent 不是安全沙箱，高风险任务请使用容器、虚拟机或最小权限账户。更多配置见 `docs/configuration.md`。请勿提交 API 密钥。
