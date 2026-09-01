@@ -12,7 +12,8 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
     "verify:offline": "node scripts/verify-offline.mjs",
-    "verify:examples": "node scripts/verify-examples.mjs"
+    "verify:examples": "node scripts/verify-examples.mjs",
+    "benchmark": "tsx scripts/benchmark.ts"
   },
   "engines": {
     "node": ">=22"
