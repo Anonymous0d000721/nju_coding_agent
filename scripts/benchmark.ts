@@ -12,7 +12,7 @@ import { McpManager, type McpTransport } from '../src/mcp/client.js';
 import { ToolExecutor } from '../src/tools/executor.js';
 import { ToolRegistry } from '../src/tools/registry.js';
 import type { ToolDefinition } from '../src/tools/types.js';
-import { loadUserPluginReport } from '../src/plugins/loader.js';
+import { disposeUserPlugins, loadUserPluginReport } from '../src/plugins/loader.js';
 
 interface BenchmarkMetric { value: number; unit: string; note?: string; }
 interface BenchmarkReport {
@@ -31,6 +31,7 @@ const startedAt = new Date().toISOString();
 const memoryBefore = process.memoryUsage().heapUsed;
 const workspace = await fs.mkdtemp(path.join(os.tmpdir(), 'nju-agent-benchmark-'));
 const metrics: Record<string, BenchmarkMetric> = {};
+let plugins: Awaited<ReturnType<typeof loadUserPluginReport>> | undefined;
 
 try {
   const startupStart = performance.now();
@@ -88,7 +89,7 @@ try {
     await fs.writeFile(path.join(pluginDirectory, `plugin-${index}.mjs`), `export default { id: 'benchmark-${index}', tools: [{ name: 'read_${index}', description: 'benchmark', risk: 'read', readonly: true, parameters: { type: 'object', additionalProperties: false }, handler: () => 'ok' }] };\n`, 'utf8');
   }
   const pluginStart = performance.now();
-  const plugins = await loadUserPluginReport(workspace, true);
+  plugins = await loadUserPluginReport(workspace, true);
   metrics.pluginLoad = metric(performance.now() - pluginStart, 'ms', `${plugins.loaded.length} plugins`);
   metrics.pluginCount = metric(plugins.loaded.length, 'plugins');
 
@@ -118,6 +119,7 @@ try {
   process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
 } finally {
   metrics.memoryHeapDelta = metric(process.memoryUsage().heapUsed - memoryBefore, 'bytes', 'process heap delta; includes benchmark harness');
+  if (plugins) await disposeUserPlugins(plugins.loaded);
   await fs.rm(workspace, { recursive: true, force: true });
 }
 

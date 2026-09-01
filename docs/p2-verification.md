@@ -29,15 +29,15 @@
 
 基准使用 FakeModel、内存 MCP transport 和临时工作区，不访问网络或真实凭据：
 
-- 首 token：`0.010 ms`
-- 8 个工具、并发上限 4：`42.223 ms`
-- 工具平均耗时：`21.125 ms`
-- 300 条历史 deterministic compaction：`2.184 ms`
-- 重试等待：`9.067 ms`
-- 12 个插件加载：`24.820 ms`
-- 10 个 MCP server 连接：`1.286 ms`
+- 首 token：`0.013 ms`
+- 8 个工具、并发上限 4：`36.947 ms`
+- 工具平均耗时：`18.125 ms`
+- 300 条历史 deterministic compaction：`3.365 ms`
+- 重试等待：`26.935 ms`
+- 12 个插件加载：`1929.954 ms`
+- 10 个 MCP server 连接：`1.796 ms`
 - 超大工具输出：`12039 chars`，有界检查通过
-- telemetry 查询和插件/MCP 隔离检查均通过
+- telemetry 查询和插件/MCP 隔离检查均通过；插件 sandbox 已在临时目录清理前显式关闭，Windows `EBUSY` 清理回归通过
 
 这些数字用于同一代码库的回归比较，不是生产 SLA。
 
