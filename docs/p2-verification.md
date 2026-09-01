@@ -4,7 +4,7 @@
 
 ## 功能提交
 
-- 用户插件体系：`2d90c02`；插件隔离修复：`808546e`
+- 用户插件体系：`2d90c02`；插件隔离修复：`808546e`、`5e02505`
 - MCP 与外部工具生态基础能力：`5ddaa17`
 - MCP runtime reload / 控制面资源清理 follow-up：`f418c54`
 - 只读插件 workspace capability 收窄：`e9aa178`
@@ -19,7 +19,7 @@
 | 命令 | 结果 |
 |---|---|
 | `npm ci` | 通过，重新安装 91 个依赖包 |
-| `npm test -- --run` | 通过，38 个测试文件、201 个测试 |
+| `npm test -- --run` | 通过，38 个测试文件、202 个测试 |
 | `npm run typecheck` | 通过 |
 | `npm run build` | 通过 |
 | `git diff --check` | 通过 |
@@ -32,13 +32,15 @@
 
 基准使用 FakeModel、内存 MCP transport 和临时工作区，不访问网络或真实凭据：
 
-- 首 token：`0.025 ms`
-- 8 个工具、并发上限 4：`36.423 ms`
-- 工具平均耗时：`18 ms`
-- 300 条历史 deterministic compaction：`2.84 ms`
-- 重试等待：`28.064 ms`
-- 12 个插件加载（另含 1 个故障插件）：`2169.931 ms`
-- 10 个健康 MCP server（另含 1 个故障 server）连接：`1.282 ms`
+- 启动初始化：`0.12 ms`
+- 首 token：`0.021 ms`
+- 8 个工具、并发上限 4：`37.374 ms`
+- 工具平均耗时：`19 ms`
+- 300 条历史 deterministic compaction：`3.303 ms`；摘要输出 `47503 chars`
+- 重试等待：`26.858 ms`
+- 12 个插件加载（另含 1 个故障插件）：`3243.95 ms`
+- 10 个健康 MCP server（另含 1 个故障 server）连接：`1.731 ms`
+- 进程堆内存变化：`1348064 bytes`（含 benchmark harness）
 - 超大工具输出：`12039 chars`，有界检查通过
 - telemetry 查询和插件/MCP 隔离检查均通过；插件 sandbox 已在临时目录清理前显式关闭，Windows `EBUSY` 清理回归通过
 
@@ -51,10 +53,10 @@
 - `git ls-files` 未发现 `node_modules`、`dist`、runtime、日志、视频或压缩包。
 - 构建、示例和 offline 验收产生的根 `dist`、示例 `runtime`、本地日志及依赖目录均为忽略生成物，不进入提交。
 - README 已补充 `NJU_AGENT_MAX_DURATION_MS`（默认 600000，范围 1–1800000）和 `NJU_AGENT_MAX_TOOL_CONCURRENCY`（默认 4，范围 1–8）；CLI help 同步展示两项配置。
-- 用户插件在独立 Node permission 子进程中加载和调用；workspace capability 经 request/response RPC 保留，取消、子进程退出、加载超时和 fail-soft 诊断有回归覆盖；对应提交 `808546e`。只读或 `read` 工具只获得 `readText`，写入工具才获得 `writeText`；宿主执行层和 sandbox worker 均有对抗性回归测试，防止只读插件绕过 policy 直接修改工作区。插件的 `readText` 和 `writeText` 都在 capability 层拒绝 `.git`、`.nju-agent`、`node_modules`、`.env`、SSH、证书、token、secret、credential 等敏感路径，硬编码敏感读取也有回归覆盖。
+- 用户插件在独立 Node permission 子进程中加载和调用，并在 worker 内通过无宿主引用的 `vm.SourceTextModule` context 执行；静态与动态 import 统一拒绝，计算得到的网络/子进程模块名也有回归覆盖。workspace capability 经 request/response RPC 保留，取消、子进程退出、加载超时和 fail-soft 诊断有回归覆盖；对应提交 `808546e`、`5e02505`。只读或 `read` 工具只获得 `readText`，写入工具才获得 `writeText`；宿主执行层和 sandbox worker 均有对抗性回归测试，防止只读插件绕过 policy 直接修改工作区。插件的 `readText` 和 `writeText` 都在 capability 层拒绝 `.git`、`.nju-agent`、`node_modules`、`.env`、SSH、证书、token、secret、credential 等敏感路径，硬编码敏感读取也有回归覆盖。
 - MCP 的进程级 `McpRuntime` 在 RPC/TUI 生命周期内复用 `McpManager`；下一次运行通过真实 `McpManager.reload()` 比较工具目录，失败保留旧实例，配置移除会断开旧 server；活动运行不热替换。
 - RPC/TUI `/reload` 的临时插件 sandbox 均在 `finally` 中释放，避免只为计数而遗留 worker。
-- P2 `4.1`、`4.2`、`4.3`、`4.4` 的全部 checkbox 已与源码、测试、文档和独立提交对应；本次读取保护修复及 explorer 有界返回回归后全量测试为 38 个测试文件、201 个测试。
+- P2 `4.1`、`4.2`、`4.3`、`4.4` 的全部 checkbox 已与源码、测试、文档和独立提交对应；插件 VM 隔离与动态导入回归后全量测试为 38 个测试文件、202 个测试。
 
 ## 已知限制
 
