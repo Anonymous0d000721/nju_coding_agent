@@ -32,15 +32,15 @@
 
 基准使用 FakeModel、内存 MCP transport 和临时工作区，不访问网络或真实凭据：
 
-- 启动初始化：`0.12 ms`
-- 首 token：`0.021 ms`
-- 8 个工具、并发上限 4：`37.374 ms`
-- 工具平均耗时：`19 ms`
-- 300 条历史 deterministic compaction：`3.303 ms`；摘要输出 `47503 chars`
-- 重试等待：`26.858 ms`
-- 12 个插件加载（另含 1 个故障插件）：`3243.95 ms`
-- 10 个健康 MCP server（另含 1 个故障 server）连接：`1.731 ms`
-- 进程堆内存变化：`1348064 bytes`（含 benchmark harness）
+- 启动初始化：`0.099 ms`
+- 首 token：`0.023 ms`
+- 8 个工具、并发上限 4：`31.197 ms`
+- 工具平均耗时：`15.5 ms`
+- 300 条历史 deterministic compaction：`2.484 ms`；摘要输出 `47503 chars`
+- 重试等待：`28.321 ms`
+- 12 个插件加载（另含 1 个故障插件）：`2208.293 ms`
+- 10 个健康 MCP server（另含 1 个故障 server）连接：`2.125 ms`
+- 进程堆内存变化：`1351344 bytes`（含 benchmark harness）
 - 超大工具输出：`12039 chars`，有界检查通过
 - telemetry 查询和插件/MCP 隔离检查均通过；插件 sandbox 已在临时目录清理前显式关闭，Windows `EBUSY` 清理回归通过
 
