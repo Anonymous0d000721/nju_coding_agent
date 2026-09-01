@@ -5,7 +5,7 @@
 ## 功能提交
 
 - 用户插件体系：`2d90c02`；插件隔离修复：`808546e`、`5e02505`
-- 用户插件开发规范与可发现 skill：`docs/plugin-development.md`、`skills/plugin-development/SKILL.md`
+- 用户插件开发规范与可发现 skill：`docs/plugin-development.md`、`skills/plugin-development/SKILL.md`（`b7d6b0d`）
 - MCP 与外部工具生态基础能力：`5ddaa17`
 - MCP runtime reload / 控制面资源清理 follow-up：`f418c54`
 - 只读插件 workspace capability 收窄：`e9aa178`
