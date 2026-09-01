@@ -28,7 +28,7 @@ npm run dev -- --print "检查项目并运行测试"
 
 ## 仓库与检查
 
-公开仓库地址：待发布后补充。
+匿名仓库地址：https://anonymous.4open.science/r/nju_coding_agent-0E040D000721
 
 ```powershell
 npm run typecheck
