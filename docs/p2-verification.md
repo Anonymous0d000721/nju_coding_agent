@@ -5,6 +5,7 @@
 ## 功能提交
 
 - 用户插件体系：`2d90c02`；插件隔离修复：`808546e`、`5e02505`
+- 用户插件开发规范与可发现 skill：`docs/plugin-development.md`、`skills/plugin-development/SKILL.md`
 - MCP 与外部工具生态基础能力：`5ddaa17`
 - MCP runtime reload / 控制面资源清理 follow-up：`f418c54`
 - 只读插件 workspace capability 收窄：`e9aa178`
@@ -12,7 +13,7 @@
 - 可观测性与性能基准：`ae9e987`
 - 只读探索子 Agent：`9cad3a7`
 
-每个逻辑功能均有独立提交。插件、MCP、telemetry/benchmark 和 explorer 的源码、测试及文档分别包含在对应提交中。
+每个逻辑功能均有独立提交。插件、MCP、telemetry/benchmark 和 explorer 的源码、测试及文档分别包含在对应提交中。用户插件规范明确模块格式、版本、schema、risk、readonly、workspace、signal、错误语义、测试规范和可复现验收命令；公开 skill 位于 `skills/plugin-development/SKILL.md`，不依赖被忽略的运行时目录。
 
 ## 自动化门禁
 
@@ -56,7 +57,7 @@
 - 用户插件在独立 Node permission 子进程中加载和调用，并在 worker 内通过无宿主引用的 `vm.SourceTextModule` context 执行；静态与动态 import 统一拒绝，计算得到的网络/子进程模块名也有回归覆盖。workspace capability 经 request/response RPC 保留，取消、子进程退出、加载超时和 fail-soft 诊断有回归覆盖；对应提交 `808546e`、`5e02505`。只读或 `read` 工具只获得 `readText`，写入工具才获得 `writeText`；宿主执行层和 sandbox worker 均有对抗性回归测试，防止只读插件绕过 policy 直接修改工作区。插件的 `readText` 和 `writeText` 都在 capability 层拒绝 `.git`、`.nju-agent`、`node_modules`、`.env`、SSH、证书、token、secret、credential 等敏感路径，硬编码敏感读取也有回归覆盖。
 - MCP 的进程级 `McpRuntime` 在 RPC/TUI 生命周期内复用 `McpManager`；下一次运行通过真实 `McpManager.reload()` 比较工具目录，失败保留旧实例，配置移除会断开旧 server；活动运行不热替换。
 - RPC/TUI `/reload` 的临时插件 sandbox 均在 `finally` 中释放，避免只为计数而遗留 worker。
-- P2 `4.1`、`4.2`、`4.3`、`4.4` 的全部 checkbox 已与源码、测试、文档和独立提交对应；插件 VM 隔离与动态导入回归后全量测试为 38 个测试文件、202 个测试。
+- P2 `4.1`、`4.2`、`4.3`、`4.4` 的全部 checkbox 已与源码、测试、文档和独立提交对应；用户插件开发规范与公开 skill 还明确列出正常、非法参数、权限拒绝、越界、取消、超时、fail-soft、冲突、reload 和脱敏测试要求。插件 VM 隔离与动态导入回归后全量测试为 38 个测试文件、202 个测试。
 
 ## 已知限制
 

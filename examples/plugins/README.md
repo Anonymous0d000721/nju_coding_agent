@@ -1,6 +1,6 @@
 # 官方用户插件示例
 
-这些示例只演示 `UserPlugin` 模块格式，不绕过主 Agent 的 `ToolExecutor`。
+完整开发规范见 [`docs/plugin-development.md`](../../docs/plugin-development.md)；供 Agent 按需加载的 skill 见 [`skills/plugin-development/SKILL.md`](../../skills/plugin-development/SKILL.md)。以下示例只演示 `UserPlugin` 模块格式，不绕过主 Agent 的 `ToolExecutor`。
 
 - `template.mjs`：最小模板，复制后修改 `id`、描述、schema 和 handler。
 - `workspace-inventory.mjs`：只读示例，只使用受限的 workspace API 读取一个明确的相对路径。
