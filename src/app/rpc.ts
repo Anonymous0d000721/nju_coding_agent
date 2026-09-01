@@ -10,12 +10,13 @@ import type { ToolApprovalHandler } from '../tools/types.js';
 import { clampThinkingLevel } from '../model/thinking.js';
 import type { ThinkingLevel } from '../model/model-client.js';
 import { MemoryPlugin } from '../context/memory.js';
-import { loadUserPlugins } from '../plugins/loader.js';
+import { disposeUserPlugins, loadUserPlugins } from '../plugins/loader.js';
 import { ProjectTrustStore } from '../shared/trust.js';
 import type { AppResult } from './app.js';
 import { ChangeJournal } from '../telemetry/journal.js';
 import { createIdleRunStatus, createRunningRunStatus, type RunStatus, type RunStatusContext } from '../telemetry/report.js';
-import { configuredMcpStatus } from '../mcp/client.js';
+import { configuredMcpStatus, type McpStatus } from '../mcp/client.js';
+import { McpRuntime } from '../mcp/runtime.js';
 
 interface RpcRequest {
   jsonrpc?: string;
@@ -43,19 +44,24 @@ interface RpcDeps {
     control?: AgentRunControl,
     onRunProgress?: (status: RunStatus) => void | Promise<void>,
     reloadMcp?: boolean,
+    mcpRuntime?: McpRuntime,
   ) => Promise<AppResult>;
   compactSession: (config: AgentConfig, sessionId: string) => Promise<{ compacted: boolean; omittedMessages: number; outputChars: number }>;
+  loadPlugins?: typeof loadUserPlugins;
+  disposePlugins?: typeof disposeUserPlugins;
+  mcpRuntime?: McpRuntime;
   approvalTimeoutMs?: number;
 }
 
-function statusContext(config: AgentConfig, sessionId?: string, reloadMcp = false): RunStatusContext {
-  const reload = reloadMcp ? { status: 'scheduled' as const, requested: true, changed: false, changes: [] } : undefined;
-  return { workspace: config.workspaceRoot, sessionId, model: config.model.model, effort: config.model.thinking.level, permissionMode: config.permissionMode, mcp: configuredMcpStatus(config.mcpServers, config.projectTrusted, reload) };
+function statusContext(config: AgentConfig, sessionId: string | undefined, mcp: McpStatus): RunStatusContext {
+  return { workspace: config.workspaceRoot, sessionId, model: config.model.model, effort: config.model.thinking.level, permissionMode: config.permissionMode, mcp };
 }
 
 export async function runRpc(deps: RpcDeps): Promise<AppResult> {
   const write = (value: unknown): void => { deps.stdout.write(`${JSON.stringify(value)}\n`); };
   const store = new JsonlSessionStore(`${deps.config.workspaceRoot}/.nju-agent`);
+  const loadPlugins = deps.loadPlugins ?? loadUserPlugins;
+  const disposePlugins = deps.disposePlugins ?? disposeUserPlugins;
   let sessionId = deps.config.session.id;
   let activeRun: { runId: string; controller: AbortController; control: AgentRunControl; done: Promise<void>; status: RunStatus } | undefined;
   let latestStatus: RunStatus | undefined;
@@ -63,6 +69,8 @@ export async function runRpc(deps: RpcDeps): Promise<AppResult> {
   let reloadMcp = false;
   let reasoningDisplay = false;
   let shuttingDown = false;
+  const mcpRuntime = deps.mcpRuntime ?? new McpRuntime(deps.config.mcpTimeoutMs);
+  const liveMcpStatus = (): McpStatus => mcpRuntime.manager.status(configuredMcpStatus(deps.config.mcpServers, deps.config.projectTrusted).configured);
   const approvalBroker = new ApprovalBroker({
     timeoutMs: deps.approvalTimeoutMs,
     onRequest: async (request) => { write({ jsonrpc: '2.0', method: 'approval/request', params: request }); },
@@ -75,7 +83,7 @@ export async function runRpc(deps: RpcDeps): Promise<AppResult> {
   };
   const response = (id: RpcRequest['id'], result: unknown): void => write({ jsonrpc: '2.0', id, result });
   const event = (type: string, data: unknown, runId?: string): void => write({ jsonrpc: '2.0', method: 'event', params: { type, ...(runId ? { runId } : {}), data } });
-  const idleStatus = (): RunStatus => createIdleRunStatus(statusContext(deps.config, sessionId, reloadMcp));
+  const idleStatus = (): RunStatus => createIdleRunStatus(statusContext(deps.config, sessionId, liveMcpStatus()));
   const setActiveStatus = (runId: string, status: RunStatus): void => {
     if (activeRun?.runId !== runId) return;
     activeRun.status = status;
@@ -160,14 +168,14 @@ export async function runRpc(deps: RpcDeps): Promise<AppResult> {
           const runReloadMcp = reloadMcp;
           reloadPlugins = false;
           reloadMcp = false;
-          const runningStatus = createRunningRunStatus(runId, statusContext(deps.config, sessionId, runReloadMcp));
+          const runningStatus = createRunningRunStatus(runId, statusContext(deps.config, sessionId, liveMcpStatus()));
           activeRun = { runId, controller, control, done: Promise.resolve(), status: runningStatus };
           event('run_start', { sessionId, status: runningStatus }, runId);
           const approveTool: ToolApprovalHandler = (tool, decision, args, request, context) => approvalBroker.request({ ...request, runId }, context.signal);
-          const done = deps.runPrompt(deps.config, text, sessionId, 'text', deps.config.model.thinking, undefined, false, async (streamEvent) => emitAgentEvent(event, streamEvent, runId), controller.signal, approveTool, runReloadPlugins, control, (status) => setActiveStatus(runId, status), runReloadMcp)
+          const done = deps.runPrompt(deps.config, text, sessionId, 'text', deps.config.model.thinking, undefined, false, async (streamEvent) => emitAgentEvent(event, streamEvent, runId), controller.signal, approveTool, runReloadPlugins, control, (status) => setActiveStatus(runId, status), runReloadMcp, mcpRuntime)
             .then((result) => {
               if (result.sessionId) sessionId = result.sessionId;
-              const status = result.status ?? { ...createRunningRunStatus(runId, statusContext(deps.config, sessionId)), state: result.exitCode === 0 ? 'completed' as const : 'failed' as const };
+              const status = result.status ?? { ...createRunningRunStatus(runId, statusContext(deps.config, sessionId, liveMcpStatus())), state: result.exitCode === 0 ? 'completed' as const : 'failed' as const };
               latestStatus = { ...status, sessionId };
               if (activeRun?.runId === runId) activeRun.status = latestStatus;
               event('message_end', { sessionId, stdout: result.stdout, stderr: result.stderr, status: latestStatus }, runId);
@@ -265,10 +273,16 @@ export async function runRpc(deps: RpcDeps): Promise<AppResult> {
           } else if (command === '/memory') {
             reply(new MemoryPlugin({ workspaceRoot: deps.config.workspaceRoot, rootDir: deps.config.memory.rootDir, enabled: deps.config.memory.enabled }).status());
           } else if (command === '/reload') {
-            const plugins = await loadUserPlugins(deps.config.workspaceRoot, deps.config.projectTrusted, true);
-            reloadPlugins = true;
-            reloadMcp = true;
-            reply({ reloaded: plugins.length, mcp: deps.config.mcpServers.length > 0, nextRun: true });
+            let plugins: Awaited<ReturnType<typeof loadUserPlugins>> = [];
+            try {
+              plugins = await loadPlugins(deps.config.workspaceRoot, deps.config.projectTrusted, true);
+              reloadPlugins = true;
+              reloadMcp = true;
+              mcpRuntime.manager.requestReload();
+              reply({ reloaded: plugins.length, mcp: deps.config.mcpServers.length > 0, nextRun: true });
+            } finally {
+              await disposePlugins(plugins);
+            }
           } else if (command === '/compact') {
             if (!sessionId) throw rpcError(-32001, 'No active session');
             reply(await deps.compactSession(deps.config, sessionId));
@@ -314,8 +328,12 @@ export async function runRpc(deps: RpcDeps): Promise<AppResult> {
       approvalBroker.cancelAll('RPC client disconnected.');
       const runToStop = activeRun;
       runToStop?.controller.abort();
-      if (runToStop) void runToStop.done.finally(() => resolve({ exitCode: shuttingDown ? 0 : 0 }));
-      else resolve({ exitCode: shuttingDown ? 0 : 0 });
+      const finish = async (): Promise<void> => {
+        if (runToStop) await runToStop.done;
+        await mcpRuntime.close();
+        resolve({ exitCode: 0 });
+      };
+      void finish();
     });
   });
 }

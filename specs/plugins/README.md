@@ -34,6 +34,6 @@
 
 ## 参考材料
 
-- `C:\Users\lenovo\.pi\agent\npm\node_modules\pi-mem-cc\README.md`：自动观察型 SQLite memory 与三层渐进检索的参考；仅作为可选 adapter 思路。
-- `C:\Users\lenovo\.pi\agent\npm\node_modules\pi-blackhole\README.md`、`src/hooks/before-compact.ts`、`src/om/ledger/types.ts`：结构化 deterministic compaction、append summary、观测账本/recall 的参考。
+- `<pi-install>/npm/node_modules/pi-mem-cc/README.md`：自动观察型 SQLite memory 与三层渐进检索的参考；仅作为可选 adapter 思路。
+- `<pi-install>/npm/node_modules/pi-blackhole/README.md`、`src/hooks/before-compact.ts`、`src/om/ledger/types.ts`：结构化 deterministic compaction、append summary、观测账本/recall 的参考。
 - Claude Code Memory 文档：<https://code.claude.com/docs/en/memory>：`MEMORY.md` index 与按需 topic memory 模式。

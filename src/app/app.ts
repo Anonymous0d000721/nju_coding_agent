@@ -29,7 +29,8 @@ import { ChangeJournal } from '../telemetry/journal.js';
 import { createProgressRunStatus, createRunReport, createRunStatus, createRunningRunStatus, writeRunReport, type RunStatus } from '../telemetry/report.js';
 import { withRetryingModelClient } from '../model/retry.js';
 import { ReadOnlyExplorer, createReadOnlyExplorerTool } from '../agent/explorer.js';
-import { McpManager, type McpConfiguredServer } from '../mcp/client.js';
+import { type McpConfiguredServer } from '../mcp/client.js';
+import { McpRuntime } from '../mcp/runtime.js';
 import { createStdioTransport } from '../mcp/stdio.js';
 import { registerMcpTools } from '../mcp/registry-adapter.js';
 import { disposeUserPlugins, loadUserPluginReport } from '../plugins/loader.js';
@@ -78,7 +79,7 @@ export function createApp(services: AppServices) {
   };
 }
 
-export async function runPrompt(config: AgentConfig, prompt: string, sessionId?: string, mode: 'text' | 'json' = 'text', thinking = config.model.thinking, streamOutput?: NodeJS.WritableStream, showThinking = false, onAgentEvent?: (event: AgentStreamEvent) => void | Promise<void>, signal?: AbortSignal, approveTool?: ToolApprovalHandler, reloadPlugins = false, control?: AgentRunControl, onRunProgress?: (status: RunStatus) => void | Promise<void>, reloadMcp = false): Promise<AppResult> {
+export async function runPrompt(config: AgentConfig, prompt: string, sessionId?: string, mode: 'text' | 'json' = 'text', thinking = config.model.thinking, streamOutput?: NodeJS.WritableStream, showThinking = false, onAgentEvent?: (event: AgentStreamEvent) => void | Promise<void>, signal?: AbortSignal, approveTool?: ToolApprovalHandler, reloadPlugins = false, control?: AgentRunControl, onRunProgress?: (status: RunStatus) => void | Promise<void>, reloadMcp = false, mcpRuntime?: McpRuntime): Promise<AppResult> {
   if (!config.model.apiKey) return missingAuth(mode);
   const registry = new ToolRegistry();
   for (const tool of createFileTools()) registry.register(tool);
@@ -104,25 +105,25 @@ export async function runPrompt(config: AgentConfig, prompt: string, sessionId?:
   for (const notice of pluginReport.trustNotices) await telemetry.append({ type: 'plugin_trust_notice', sessionId: session?.id, data: { ...notice } });
   const runId = randomUUID();
   const recordMcpEvent = (type: 'mcp_connect' | 'mcp_disconnect', data: Record<string, unknown>) => telemetry.append({ type, sessionId: session?.id, runId, data });
-  const mcp = new McpManager(config.mcpTimeoutMs);
+  const ownedMcpRuntime = mcpRuntime ?? new McpRuntime(config.mcpTimeoutMs);
+  const mcp = ownedMcpRuntime.manager;
   if (reloadMcp) mcp.requestReload();
   const configuredMcp: McpConfiguredServer[] = config.mcpServers.map((server) => ({ name: server.name, command: server.command, ...(server.cwd ? { cwd: server.cwd } : {}), enabled: config.projectTrusted, ...(config.projectTrusted ? {} : { reason: 'workspace_untrusted' }) }));
   const mcpServers = config.projectTrusted ? config.mcpServers : [];
-  let mcpConnectFailures = 0;
-  for (const server of mcpServers) {
-    try {
-      const serverCwd = await resolveWorkspacePath(config.workspaceRoot, server.cwd ?? '.');
-      await mcp.connect(server.name, createStdioTransport({ command: server.command, args: server.args, cwd: serverCwd.absolutePath, env: server.env }));
-      await recordMcpEvent('mcp_connect', { server: server.name, state: 'connected' });
-    } catch (error) {
-      mcpConnectFailures += 1;
-      await telemetry.append({ type: 'mcp_error', sessionId: session?.id, runId, data: { server: server.name, message: redact(error instanceof Error ? error.message : String(error), { extraSecrets: Object.values(config.model).filter((value): value is string => typeof value === 'string') }) } });
-    }
+  const createMcpTransport = async (server: { command: string; args?: string[]; cwd?: string; env?: Record<string, string> }) => {
+    const serverCwd = await resolveWorkspacePath(config.workspaceRoot, server.cwd ?? '.');
+    return createStdioTransport({ command: server.command, args: server.args, cwd: serverCwd.absolutePath, env: server.env });
+  };
+  const sync = reloadMcp
+    ? await ownedMcpRuntime.reload(mcpServers, createMcpTransport)
+    : await ownedMcpRuntime.sync(mcpServers, createMcpTransport);
+  for (const server of sync.connected) await recordMcpEvent('mcp_connect', { server, state: 'connected', reload: false });
+  for (const server of sync.reloaded) {
+    await recordMcpEvent('mcp_disconnect', { server, reason: 'reload' });
+    await recordMcpEvent('mcp_connect', { server, state: 'connected', reload: true });
   }
-  if (reloadMcp) {
-    if (mcpConnectFailures > 0) mcp.markReloadFailed(new Error(`${mcpConnectFailures} MCP server(s) failed during reload.`));
-    else mcp.markReloadApplied();
-  }
+  for (const server of sync.disconnected) await recordMcpEvent('mcp_disconnect', { server, reason: 'configuration_removed' });
+  for (const failure of sync.failures) await telemetry.append({ type: 'mcp_error', sessionId: session?.id, runId, data: { server: failure.server, message: redact(failure.error.message, { extraSecrets: Object.values(config.model).filter((value): value is string => typeof value === 'string') }) } });
   registerMcpTools(mcp, registry);
   if (config.mcpServers.length > 0 && !config.projectTrusted) await telemetry.append({ type: 'mcp_skipped_untrusted', sessionId: session?.id, runId, data: { serverCount: config.mcpServers.length } });
   const modelClient = withRetryingModelClient(createModelClient({ apiFormat: config.model.apiFormat, apiKey: config.model.apiKey, baseUrl: config.model.baseUrl, model: config.model.model }), {
@@ -247,13 +248,19 @@ export async function runPrompt(config: AgentConfig, prompt: string, sessionId?:
     const rendered = mode === 'json'
       ? `${JSON.stringify({ type: 'run_end', level: 'info', data: { ...result, status } })}\n`
       : renderRunResult(result, !streamedText);
-    for (const server of mcp.serversStatus()) await recordMcpEvent('mcp_disconnect', { server: server.name, toolCount: server.toolCount, pid: server.pid, reason: 'run_end' });
-    await mcp.disconnectAll();
+    if (!mcpRuntime) {
+      const servers = mcp.serversStatus();
+      try { await ownedMcpRuntime.close(); }
+      finally { for (const server of servers) await recordMcpEvent('mcp_disconnect', { server: server.name, toolCount: server.toolCount, pid: server.pid, reason: 'run_end' }); }
+    }
     await disposeUserPlugins(pluginReport.loaded);
     return { exitCode: 0, stdout: streamedText && rendered ? `\n${rendered}` : rendered, sessionId: session?.id, status };
   } catch (error) {
-    for (const server of mcp.serversStatus()) await recordMcpEvent('mcp_disconnect', { server: server.name, toolCount: server.toolCount, pid: server.pid, reason: 'run_error' });
-    await mcp.disconnectAll();
+    if (!mcpRuntime) {
+      const servers = mcp.serversStatus();
+      try { await ownedMcpRuntime.close(); }
+      finally { for (const server of servers) await recordMcpEvent('mcp_disconnect', { server: server.name, toolCount: server.toolCount, pid: server.pid, reason: 'run_error' }); }
+    }
     await disposeUserPlugins(pluginReport.loaded);
     const message = redact(error instanceof Error ? error.message : String(error), { extraSecrets: [config.model.apiKey] });
     await telemetry.append({ type: 'run_error', sessionId: session?.id, runId, data: { message } });

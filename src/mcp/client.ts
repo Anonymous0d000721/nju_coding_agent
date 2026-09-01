@@ -243,6 +243,14 @@ export class McpManager {
     return this.serversStatus();
   }
 
+  hasServer(name: string): boolean {
+    return this.servers.has(safeMcpName(name));
+  }
+
+  serverNames(): string[] {
+    return [...this.servers.keys()];
+  }
+
   catalogSnapshot(): { version: 1; hash: string; tools: McpCatalogEntry[] } {
     const tools: McpCatalogEntry[] = [];
     for (const server of this.servers.values()) for (const tool of server.tools) {
@@ -391,6 +399,12 @@ async function requestWithControl(transport: McpTransport, method: string, param
     }
     request.then((value) => finish(() => resolve(value)), (error) => finish(() => reject(error instanceof Error ? error : new Error(String(error)))));
   });
+}
+
+export function diffCatalogs(before: McpCatalogEntry[], after: McpCatalogEntry[]): McpToolChange[] {
+  const previous = new Map(before.map((entry) => [entry.qualifiedName, stableJson({ description: entry.description, risk: entry.risk, schema: entry.schema })]));
+  const current = new Map(after.map((entry) => [entry.qualifiedName, stableJson({ description: entry.description, risk: entry.risk, schema: entry.schema })]));
+  return diffSnapshots(previous, current);
 }
 
 function diffSnapshots(before: Map<string, string>, after: Map<string, string>): McpToolChange[] {

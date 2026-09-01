@@ -217,6 +217,27 @@ describe('JSON-RPC mode', () => {
     await rpc;
   });
 
+  it('disposes temporary plugin sandboxes after scheduling a reload', async () => {
+    const input = new PassThrough();
+    const output = new PassThrough();
+    let disposed = 0;
+    const plugin = { id: 'reload-check', tools: [], source: 'plugin.mjs', sha256: 'a'.repeat(64), dispose: async () => { disposed += 1; } };
+    const rpc = runRpc({
+      config: { ...config('D:/rpc-test-reload-dispose'), projectTrusted: true }, stdin: input, stdout: output,
+      loadPlugins: async () => [plugin],
+      disposePlugins: async (plugins) => { for (const item of plugins) await item.dispose?.(); },
+      runPrompt: async () => ({ exitCode: 0 }),
+      compactSession: async () => ({ compacted: false, omittedMessages: 0, outputChars: 0 }),
+    });
+
+    input.write('{"jsonrpc":"2.0","id":"r","method":"slash","params":{"command":"/reload"}}\n');
+    await tick();
+    expect(lines(output).find((message) => message.id === 'r')?.result).toMatchObject({ reloaded: 1, nextRun: true });
+    expect(disposed).toBe(1);
+    input.write('{"jsonrpc":"2.0","id":"q","method":"shutdown"}\n');
+    await rpc;
+  });
+
   it('returns JSON-RPC errors for malformed JSON, unknown methods, and invalid parameters', async () => {
     const input = new PassThrough();
     const output = new PassThrough();
