@@ -4,7 +4,7 @@
 
 ## 功能提交
 
-- 用户插件体系：`2d90c02`
+- 用户插件体系：`2d90c02`；插件隔离修复：`808546e`
 - MCP 与外部工具生态：`5ddaa17`
 - 可观测性与性能基准：`ae9e987`
 - 只读探索子 Agent：`9cad3a7`
@@ -16,7 +16,7 @@
 | 命令 | 结果 |
 |---|---|
 | `npm ci` | 通过，重新安装 91 个依赖包 |
-| `npm test -- --run` | 通过，37 个测试文件、187 个测试 |
+| `npm test -- --run` | 通过，37 个测试文件、191 个测试 |
 | `npm run typecheck` | 通过 |
 | `npm run build` | 通过 |
 | `git diff --check` | 通过 |
@@ -48,6 +48,7 @@
 - `git ls-files` 未发现 `node_modules`、`dist`、runtime、日志、视频或压缩包。
 - 构建、示例和 offline 验收产生的根 `dist`、示例 `runtime`、本地日志及依赖目录均为忽略生成物，不进入提交。
 - README 已补充 `NJU_AGENT_MAX_DURATION_MS`（默认 600000，范围 1–1800000）和 `NJU_AGENT_MAX_TOOL_CONCURRENCY`（默认 4，范围 1–8）；CLI help 同步展示两项配置。
+- 用户插件在独立 Node permission 子进程中加载和调用；workspace capability 经 request/response RPC 保留，取消、子进程退出、加载超时和 fail-soft 诊断有回归覆盖；对应提交 `808546e`。
 - P2 `4.1`、`4.2`、`4.3`、`4.4` 的全部 checkbox 已与源码、测试、文档和独立提交对应。
 
 ## 已知限制
@@ -58,4 +59,4 @@
 
 ## 最终工作树
 
-本报告和 README/TODO/help 文档修改验证后提交；提交前再次确认 `git status --short` 为空。
+本报告及相关文档已随对应提交更新。隔离修复后的最后一轮确认：`git status --short` 为空、`git diff --check` 退出码为 0，`git diff --name-only` 和 `git diff --cached --name-only` 均为空。
