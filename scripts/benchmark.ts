@@ -117,6 +117,7 @@ try {
   await fs.writeFile(artifact, `${JSON.stringify(report, null, 2)}\n`, 'utf8');
   report.artifactPath = artifact;
   process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
+  if (!Object.values(report.checks).every(Boolean)) process.exitCode = 1;
 } finally {
   metrics.memoryHeapDelta = metric(process.memoryUsage().heapUsed - memoryBefore, 'bytes', 'process heap delta; includes benchmark harness');
   if (plugins) await disposeUserPlugins(plugins.loaded);
