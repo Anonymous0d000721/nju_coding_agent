@@ -24,7 +24,7 @@ npm run dev
 npm run dev -- --print "检查项目并运行测试"
 ```
 
-`--mode json` 输出 JSONL 事件，`--mode rpc` 启动 JSON-RPC JSONL 服务。凭据只从环境变量或未入库的 `.env` 读取。
+`--mode json` 输出 JSONL 事件，`--mode rpc` 启动 JSON-RPC JSONL 服务。凭据只从环境变量或未入库的 `.env` 读取。单次运行默认最多 600000 毫秒，可用 `NJU_AGENT_MAX_DURATION_MS` 设置 1–1800000 毫秒；同一回合工具默认最多并发 4 个，可用 `NJU_AGENT_MAX_TOOL_CONCURRENCY` 设置 1–8。超时会通过 AbortSignal 取消模型和工具，结果仍按原始调用顺序回填。
 
 ## 仓库与检查
 
@@ -36,4 +36,4 @@ npm test -- --run
 npm run build
 ```
 
-工具继承当前操作系统用户权限，nju-agent 不是安全沙箱；高风险任务请使用容器、虚拟机或最小权限账户。请勿提交 API 密钥。
+预算和并发上限是宿主侧可靠性保护，不是操作系统资源沙箱；外部 MCP、PowerShell 和插件仍继承当前用户权限。nju-agent 不是安全沙箱，高风险任务请使用容器、虚拟机或最小权限账户。更多配置见 `docs/configuration.md`。请勿提交 API 密钥。
