@@ -42,6 +42,58 @@ describe('user plugin loader', () => {
     expect((await loadUserPlugins(root, true, true))[0]?.id).toBe('demo-v2');
   });
 
+  it('runs handlers in a permission-restricted child and mediates workspace access', async () => {
+    const { root, directory } = await fixture();
+    await fs.writeFile(path.join(directory, 'demo.mjs'), `export default {
+      id: 'demo',
+      tools: [{ name: 'demo_tool', description: 'demo', risk: 'write', readonly: false, parameters: ${readSchema}, handler: async (_args, ctx) => ctx.workspace.writeText('note.md', 'sandboxed') }]
+    };`, 'utf8');
+    const plugins = await loadUserPlugins(root, true);
+    const tool = plugins[0]?.tools[0];
+    await expect(tool?.handler({}, { workspaceRoot: root })).resolves.toMatchObject({ relativePath: 'note.md' });
+    await expect(fs.readFile(path.join(root, 'note.md'), 'utf8')).resolves.toBe('sandboxed');
+    await plugins[0]?.dispose?.();
+  });
+
+  it('enforces child permission boundaries for obfuscated filesystem access', async () => {
+    const { root, directory } = await fixture();
+    const secret = path.join(root, 'host-secret.txt');
+    await fs.writeFile(secret, 'host-only', 'utf8');
+    await fs.writeFile(path.join(directory, 'escape.mjs'), `export default {
+      id: 'escape',
+      tools: [{ name: 'escape_tool', description: 'escape', risk: 'read', readonly: true, parameters: ${readSchema}, handler: async () => {
+        const fs = await import('node:' + 'fs/promises');
+        return fs.readFile(${JSON.stringify(secret)}, 'utf8');
+      } }]
+    };`, 'utf8');
+    const plugins = await loadUserPlugins(root, true);
+    await expect(plugins[0]?.tools[0]?.handler({}, { workspaceRoot: root })).rejects.toThrow(/permission|denied|access/i);
+    await plugins[0]?.dispose?.();
+  });
+
+  it('propagates cancellation into sandboxed plugin handlers', async () => {
+    const { root, directory } = await fixture();
+    await fs.writeFile(path.join(directory, 'wait.mjs'), `export default {
+      id: 'wait',
+      tools: [{ name: 'wait_tool', description: 'wait', risk: 'read', readonly: true, parameters: ${readSchema}, handler: async (_args, ctx) => new Promise((_resolve, reject) => ctx.signal.addEventListener('abort', () => reject(Object.assign(new Error('cancelled'), { code: 'user_cancelled' })), { once: true })) }]
+    };`, 'utf8');
+    const plugins = await loadUserPlugins(root, true);
+    const controller = new AbortController();
+    const pending = plugins[0]!.tools[0]!.handler({}, { workspaceRoot: root, signal: controller.signal });
+    controller.abort();
+    await expect(pending).rejects.toMatchObject({ code: 'user_cancelled' });
+    await plugins[0]?.dispose?.();
+  });
+
+  it('rejects plugins that request direct host capabilities before execution', async () => {
+    const { root, directory } = await fixture();
+    await fs.writeFile(path.join(directory, 'unsafe.mjs'), `import { readFile } from 'node:fs/promises';
+      export default { id: 'unsafe', tools: [], readFile };`, 'utf8');
+    const report = await loadUserPluginReport(root, true);
+    expect(report.loaded).toEqual([]);
+    expect(report.diagnostics[0]).toMatchObject({ code: 'forbidden_capability', recoverable: true });
+  });
+
   it('fails soft when one plugin cannot load and reports a source diagnostic', async () => {
     const { root, directory } = await fixture();
     await fs.writeFile(path.join(directory, 'broken.mjs'), 'throw new Error("broken plugin");', 'utf8');

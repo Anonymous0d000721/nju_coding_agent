@@ -32,7 +32,7 @@ import { ReadOnlyExplorer, createReadOnlyExplorerTool } from '../agent/explorer.
 import { McpManager, type McpConfiguredServer } from '../mcp/client.js';
 import { createStdioTransport } from '../mcp/stdio.js';
 import { registerMcpTools } from '../mcp/registry-adapter.js';
-import { loadUserPluginReport } from '../plugins/loader.js';
+import { disposeUserPlugins, loadUserPluginReport } from '../plugins/loader.js';
 import { resolveWorkspacePath } from '../tools/path-guard.js';
 import { runRpc } from './rpc.js';
 import type { AgentMessage, AgentRunControl, AgentRunProgress, AgentRunResult, AgentStreamEvent } from '../agent/types.js';
@@ -249,10 +249,12 @@ export async function runPrompt(config: AgentConfig, prompt: string, sessionId?:
       : renderRunResult(result, !streamedText);
     for (const server of mcp.serversStatus()) await recordMcpEvent('mcp_disconnect', { server: server.name, toolCount: server.toolCount, pid: server.pid, reason: 'run_end' });
     await mcp.disconnectAll();
+    await disposeUserPlugins(pluginReport.loaded);
     return { exitCode: 0, stdout: streamedText && rendered ? `\n${rendered}` : rendered, sessionId: session?.id, status };
   } catch (error) {
     for (const server of mcp.serversStatus()) await recordMcpEvent('mcp_disconnect', { server: server.name, toolCount: server.toolCount, pid: server.pid, reason: 'run_error' });
     await mcp.disconnectAll();
+    await disposeUserPlugins(pluginReport.loaded);
     const message = redact(error instanceof Error ? error.message : String(error), { extraSecrets: [config.model.apiKey] });
     await telemetry.append({ type: 'run_error', sessionId: session?.id, runId, data: { message } });
     const failedStatus = { ...createRunningRunStatus(runId, {

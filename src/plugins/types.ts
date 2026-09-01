@@ -15,7 +15,7 @@ export interface UserPluginModule {
 export interface PluginLoadDiagnostic {
   source?: string;
   pluginId?: string;
-  code: 'untrusted_workspace' | 'load_failed' | 'invalid_manifest' | 'version_conflict' | 'tool_name_conflict';
+  code: 'untrusted_workspace' | 'load_failed' | 'invalid_manifest' | 'version_conflict' | 'tool_name_conflict' | 'forbidden_capability';
   message: string;
   recoverable: true;
 }
@@ -35,4 +35,5 @@ export interface UserPluginLoadReport {
 export interface LoadedUserPlugin extends UserPlugin {
   source: string;
   sha256: string;
+  dispose?: () => Promise<void>;
 }
