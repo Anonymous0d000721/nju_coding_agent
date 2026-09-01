@@ -28,6 +28,7 @@ import { TelemetryStore } from '../telemetry/store.js';
 import { ChangeJournal } from '../telemetry/journal.js';
 import { createProgressRunStatus, createRunReport, createRunStatus, createRunningRunStatus, writeRunReport, type RunStatus } from '../telemetry/report.js';
 import { withRetryingModelClient } from '../model/retry.js';
+import { ReadOnlyExplorer, createReadOnlyExplorerTool } from '../agent/explorer.js';
 import { McpManager, type McpConfiguredServer } from '../mcp/client.js';
 import { createStdioTransport } from '../mcp/stdio.js';
 import { registerMcpTools } from '../mcp/registry-adapter.js';
@@ -95,11 +96,14 @@ export async function runPrompt(config: AgentConfig, prompt: string, sessionId?:
     for (const tool of plugin.tools) registry.register(tool);
   }
   const sessionStore = config.session.enabled ? new JsonlSessionStore(`${config.workspaceRoot}/.nju-agent`) : undefined;
+  const session = sessionStore ? (sessionId || config.session.id
+    ? await sessionStore.open(sessionId ?? config.session.id!)
+    : await sessionStore.create({ cwd: config.workspaceRoot, model: config.model.model, appVersion: renderVersion().trim() })) : undefined;
   const telemetry = new TelemetryStore(`${config.workspaceRoot}/.nju-agent/logs/events.jsonl`, config.telemetry, config.model.apiKey ? [config.model.apiKey] : []);
-  for (const diagnostic of pluginReport.diagnostics) await telemetry.append({ type: 'plugin_load_diagnostic', sessionId, data: { ...diagnostic } });
-  for (const notice of pluginReport.trustNotices) await telemetry.append({ type: 'plugin_trust_notice', sessionId, data: { ...notice } });
+  for (const diagnostic of pluginReport.diagnostics) await telemetry.append({ type: 'plugin_load_diagnostic', sessionId: session?.id, data: { ...diagnostic } });
+  for (const notice of pluginReport.trustNotices) await telemetry.append({ type: 'plugin_trust_notice', sessionId: session?.id, data: { ...notice } });
   const runId = randomUUID();
-  const recordMcpEvent = (type: 'mcp_connect' | 'mcp_disconnect', data: Record<string, unknown>) => telemetry.append({ type, sessionId: sessionStore ? sessionId : undefined, runId, data });
+  const recordMcpEvent = (type: 'mcp_connect' | 'mcp_disconnect', data: Record<string, unknown>) => telemetry.append({ type, sessionId: session?.id, runId, data });
   const mcp = new McpManager(config.mcpTimeoutMs);
   if (reloadMcp) mcp.requestReload();
   const configuredMcp: McpConfiguredServer[] = config.mcpServers.map((server) => ({ name: server.name, command: server.command, ...(server.cwd ? { cwd: server.cwd } : {}), enabled: config.projectTrusted, ...(config.projectTrusted ? {} : { reason: 'workspace_untrusted' }) }));
@@ -112,7 +116,7 @@ export async function runPrompt(config: AgentConfig, prompt: string, sessionId?:
       await recordMcpEvent('mcp_connect', { server: server.name, state: 'connected' });
     } catch (error) {
       mcpConnectFailures += 1;
-      await telemetry.append({ type: 'mcp_error', runId, data: { server: server.name, message: redact(error instanceof Error ? error.message : String(error), { extraSecrets: Object.values(config.model).filter((value): value is string => typeof value === 'string') }) } });
+      await telemetry.append({ type: 'mcp_error', sessionId: session?.id, runId, data: { server: server.name, message: redact(error instanceof Error ? error.message : String(error), { extraSecrets: Object.values(config.model).filter((value): value is string => typeof value === 'string') }) } });
     }
   }
   if (reloadMcp) {
@@ -120,14 +124,21 @@ export async function runPrompt(config: AgentConfig, prompt: string, sessionId?:
     else mcp.markReloadApplied();
   }
   registerMcpTools(mcp, registry);
-  if (config.mcpServers.length > 0 && !config.projectTrusted) await telemetry.append({ type: 'mcp_skipped_untrusted', runId, data: { serverCount: config.mcpServers.length } });
+  if (config.mcpServers.length > 0 && !config.projectTrusted) await telemetry.append({ type: 'mcp_skipped_untrusted', sessionId: session?.id, runId, data: { serverCount: config.mcpServers.length } });
+  const modelClient = withRetryingModelClient(createModelClient({ apiFormat: config.model.apiFormat, apiKey: config.model.apiKey, baseUrl: config.model.baseUrl, model: config.model.model }), {
+    onRetry: async (retry) => { await telemetry.append({ type: 'model_retry', sessionId: session?.id, runId, data: { ...retry } }); },
+  });
+  registry.register(createReadOnlyExplorerTool(new ReadOnlyExplorer(modelClient, config.workspaceRoot), async (event) => {
+    await telemetry.append({ type: `explorer_${event.type}`, sessionId: session?.id, runId: event.runId, data: { parentRunId: runId, ...event } });
+  }));
+  const reportedVerificationIds = new Set<string>();
   const hooks = new HookRegistry();
   hooks.register({
-    beforeModelRequest: async ({ turn }) => { await telemetry.append({ type: 'model_request_start', runId, data: { turn } }); },
-    beforeTool: async ({ turn, toolCall }) => { await telemetry.append({ type: 'tool_call_start', runId, data: { turn, toolName: toolCall?.name } }); },
-    afterTool: async ({ turn, toolResult }) => { await telemetry.append({ type: 'tool_result', runId, data: { turn, toolName: toolResult?.toolName, mcpServer: toolResult?.toolName ? mcpServerForTool(toolResult.toolName) : undefined, ok: toolResult?.ok, elapsedMs: toolResult?.elapsedMs, truncated: toolResult?.truncated, errorCode: toolResult?.error?.code, policy: toolResult?.policyDecision, approval: toolResult?.approval } }); },
-    afterTurn: async ({ turn }) => { await telemetry.append({ type: 'turn_end', runId, data: { turn } }); },
-    onStop: async ({ result }) => { await telemetry.append({ type: 'runner_stop', runId, data: { stopReason: result.stopReason, turns: result.turns, toolCalls: result.toolCalls } }); },
+    beforeModelRequest: async ({ turn }) => { await telemetry.append({ type: 'model_request_start', sessionId: session?.id, runId, data: { turn } }); },
+    beforeTool: async ({ turn, toolCall }) => { await telemetry.append({ type: 'tool_call_start', sessionId: session?.id, runId, toolCallId: toolCall?.id, data: { turn, toolName: toolCall?.name } }); },
+    afterTool: async ({ turn, toolCall, toolResult }) => { await telemetry.append({ type: 'tool_result', sessionId: session?.id, runId, toolCallId: toolResult?.toolCallId ?? toolCall?.id, data: { turn, toolName: toolResult?.toolName, mcpServer: toolResult?.toolName ? mcpServerForTool(toolResult.toolName) : undefined, ok: toolResult?.ok, elapsedMs: toolResult?.elapsedMs, truncated: toolResult?.truncated, errorCode: toolResult?.error?.code, policy: toolResult?.policyDecision, approval: toolResult?.approval } }); },
+    afterTurn: async ({ turn }) => { await telemetry.append({ type: 'turn_end', sessionId: session?.id, runId, data: { turn } }); },
+    onStop: async ({ result }) => { await telemetry.append({ type: 'runner_stop', sessionId: session?.id, runId, data: { stopReason: result.stopReason, turns: result.turns, toolCalls: result.toolCalls } }); },
   });
   const skillRegistry = new SkillRegistry();
   const trusted = config.projectTrusted;
@@ -141,10 +152,6 @@ export async function runPrompt(config: AgentConfig, prompt: string, sessionId?:
   const instructions = instructionItems
     .map((item) => `Source: ${item.path}\nTrust: ${item.trusted ? 'approved' : 'document-only'}\n${item.content}`)
     .join('\n\n');
-  const session = sessionStore ? (sessionId || config.session.id
-
-    ? await sessionStore.open(sessionId ?? config.session.id!)
-    : await sessionStore.create({ cwd: config.workspaceRoot, model: config.model.model, appVersion: renderVersion().trim() })) : undefined;
   const expandedPrompt = await expandPromptAttachments(prompt, config.workspaceRoot);
   const effectivePrompt = expandedPrompt.prompt;
   await telemetry.append({ type: 'run_start', sessionId: session?.id, runId, data: { model: config.model.model, apiFormat: config.model.apiFormat, permissionMode: config.permissionMode } });
@@ -164,13 +171,11 @@ export async function runPrompt(config: AgentConfig, prompt: string, sessionId?:
   const { contributions, diagnostics: contextDiagnostics } = await harness.contributions({ workspaceRoot: config.workspaceRoot, sessionId: session?.id, signal }, nativeContributions);
   for (const diagnostic of contextDiagnostics) await telemetry.append({ type: 'harness_error', sessionId: session?.id, runId, data: { ...diagnostic } });
   const runner = new AgentRunner({
-    model: withRetryingModelClient(createModelClient({ apiFormat: config.model.apiFormat, apiKey: config.model.apiKey, baseUrl: config.model.baseUrl, model: config.model.model }), {
-      onRetry: async (retry) => { await telemetry.append({ type: 'model_retry', sessionId: session?.id, runId, data: { ...retry } }); },
-    }),
-    tools: new ToolExecutor(registry, { workspaceRoot: config.workspaceRoot, permissionMode: config.permissionMode, previewLines: config.toolPreviewLines ?? 8, maxConcurrency: config.maxConcurrency, runId, approve: approveTool, onApproval: async (request, record) => { if (session && sessionStore) await sessionStore.append(session.id, createApprovalEntry(session.id, request, record)); await telemetry.append({ type: 'approval_result', sessionId: session?.id, runId, data: { requestId: request.requestId, toolCallId: request.toolCallId, toolName: request.toolName, risk: request.risk, workspacePath: request.workspacePath, outcome: record.outcome, reason: record.reason, scope: record.scope, elapsedMs: record.elapsedMs } }); }, onPolicyDecision: async (decision) => { await telemetry.append({ type: 'policy_decision', runId, data: { ...decision } }); }, onFileMutation: async (mutation) => {
+    model: modelClient,
+    tools: new ToolExecutor(registry, { workspaceRoot: config.workspaceRoot, permissionMode: config.permissionMode, previewLines: config.toolPreviewLines ?? 8, maxConcurrency: config.maxConcurrency, runId, approve: approveTool, onApproval: async (request, record) => { if (session && sessionStore) await sessionStore.append(session.id, createApprovalEntry(session.id, request, record)); await telemetry.append({ type: 'approval_result', sessionId: session?.id, runId, data: { requestId: request.requestId, toolCallId: request.toolCallId, toolName: request.toolName, risk: request.risk, workspacePath: request.workspacePath, outcome: record.outcome, reason: record.reason, scope: record.scope, elapsedMs: record.elapsedMs } }); }, onPolicyDecision: async (decision) => { await telemetry.append({ type: 'policy_decision', sessionId: session?.id, runId, data: { ...decision } }); }, onFileMutation: async (mutation) => {
       await new ChangeJournal(config.workspaceRoot, runId, session?.id, async (record) => {
         if (session && sessionStore) await sessionStore.append(session.id, createFileMutationEntry(session.id, record));
-        await telemetry.append({ type: 'file_mutation', sessionId: session?.id, runId, data: { id: record.id, operation: record.operation, relativePath: record.relativePath, beforeHash: record.beforeHash, afterHash: record.afterHash, reversible: record.reversible, artifactPath: record.artifactPath, toolCallId: record.toolCallId, undoOf: record.undoOf } });
+        await telemetry.append({ type: 'file_mutation', sessionId: session?.id, runId, mutationId: record.id, toolCallId: record.toolCallId, data: { id: record.id, operation: record.operation, relativePath: record.relativePath, beforeHash: record.beforeHash, afterHash: record.afterHash, reversible: record.reversible, artifactPath: record.artifactPath, undoOf: record.undoOf } });
       }).record(mutation);
     } }),
     systemPrompt: buildSystemPrompt(config.workspaceRoot, { pluginContext: renderContributions(contributions) }),
@@ -196,7 +201,7 @@ export async function runPrompt(config: AgentConfig, prompt: string, sessionId?:
       } : undefined,
       onCompaction: session && sessionStore ? async (compaction) => {
         await sessionStore.append(session.id, createSummaryEntry(session.id, compaction.summary, compaction.coveredEntryIds, 'threshold', { algorithm: 'deterministic-v1', firstKeptEntryId: compaction.firstKeptEntryId, stats: compaction.stats }));
-        await telemetry.append({ type: 'compaction_end', sessionId: session.id, runId, data: { omittedMessages: compaction.omittedMessages, coveredEntryIds: compaction.coveredEntryIds, stats: compaction.stats } });
+        await telemetry.append({ type: 'compaction_end', sessionId: session.id, runId, compactionId: randomUUID(), data: { omittedMessages: compaction.omittedMessages, coveredEntryIds: compaction.coveredEntryIds, stats: compaction.stats } });
       } : undefined,
       runId,
       onProgress: async (progress: AgentRunProgress) => {
@@ -208,6 +213,11 @@ export async function runPrompt(config: AgentConfig, prompt: string, sessionId?:
           permissionMode: config.permissionMode,
           mcp: mcp.status(configuredMcp),
         }));
+        for (const evidence of progress.verification?.evidence ?? []) {
+          if (reportedVerificationIds.has(evidence.id)) continue;
+          reportedVerificationIds.add(evidence.id);
+          await telemetry.append({ type: 'verification', sessionId: session?.id, runId, verificationId: evidence.id, toolCallId: evidence.sourceToolCallId, data: { kind: evidence.kind, status: evidence.status, command: evidence.command, targetPath: evidence.targetPath, exitCode: evidence.exitCode, elapsedMs: evidence.elapsedMs, summary: evidence.summary } });
+        }
       },
     }, signal);
     if (session && sessionStore) await sessionStore.append(session.id, createRunEndEntry(session.id, result));
