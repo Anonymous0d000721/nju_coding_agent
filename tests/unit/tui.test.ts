@@ -8,6 +8,9 @@ import type { SessionEntry } from '../../src/session/session-types.js';
 import type { AgentStreamEvent } from '../../src/agent/types.js';
 import { createIdleRunStatus, type RunStatus } from '../../src/telemetry/report.js';
 import { JsonlSessionStore } from '../../src/session/jsonl-store.js';
+import { currentMcpStatus } from '../../src/app/tui.js';
+import { McpRuntime } from '../../src/mcp/runtime.js';
+import type { AgentConfig } from '../../src/shared/config.js';
 import { ApprovalBroker } from '../../src/tools/approval.js';
 
 const base: TuiMessage[] = [{ role: 'system', text: 'ready' }];
@@ -86,6 +89,24 @@ describe('TUI event rendering', () => {
     expect(text).toContain('permission: yolo');
     expect(text).toContain('turns: 0 · tool calls: 0 (0 ok, 0 failed)');
     expect(text).toContain('stop reason: (not started)');
+  });
+
+  it('keeps live MCP catalog and reload state in idle TUI status', async () => {
+    const runtime = new McpRuntime();
+    const config = {
+      workspaceRoot: 'D:/workspace', projectTrusted: true,
+      mcpServers: [{ name: 'demo', command: 'node' }],
+    } as AgentConfig;
+    await runtime.sync(config.mcpServers, async () => ({
+      request: async (method) => method === 'tools/list' ? { tools: [{ name: 'read', risk: 'read' }] } : { protocolVersion: '2024-11-05' },
+    }));
+
+    const connected = currentMcpStatus(runtime, config);
+    expect(connected).toMatchObject({ servers: [{ name: 'demo', state: 'connected' }], toolCatalog: [{ qualifiedName: 'mcp__demo__read' }], reload: { status: 'idle' } });
+
+    runtime.manager.requestReload();
+    expect(currentMcpStatus(runtime, config)).toMatchObject({ servers: [{ name: 'demo', state: 'connected' }], toolCatalog: [{ qualifiedName: 'mcp__demo__read' }], reload: { status: 'scheduled', requested: true } });
+    await runtime.close();
   });
 
   it('formats structured run evidence without losing command and error details', () => {

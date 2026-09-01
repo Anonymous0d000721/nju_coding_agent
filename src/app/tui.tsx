@@ -21,7 +21,7 @@ import type { AppResult, AppServices, compactSession, memoryStatus, runPrompt } 
 import { disposeUserPlugins, loadUserPlugins } from '../plugins/loader.js';
 import { ChangeJournal } from '../telemetry/journal.js';
 import { createIdleRunStatus, createRunningRunStatus, type RunStatus } from '../telemetry/report.js';
-import { configuredMcpStatus } from '../mcp/client.js';
+import { configuredMcpStatus, type McpStatus } from '../mcp/client.js';
 import { McpRuntime } from '../mcp/runtime.js';
 
 export type RunPrompt = typeof runPrompt;
@@ -40,7 +40,7 @@ export const TUI_COMMANDS = [
   { name: '/new', description: 'start a new session' }, { name: '/fork', description: 'fork current session' }, { name: '/trust', description: 'trust this workspace' }, { name: '/name', description: 'name current session' }, { name: '/sessions', description: 'list sessions' },
   { name: '/resume', description: 'select a session' }, { name: '/rename', description: 'rename current session' }, { name: '/model', description: 'select a model' },
   { name: '/effort', description: 'select reasoning effort' }, { name: '/reasoning', description: 'toggle reasoning display' },
-  { name: '/thinking', description: 'alias for /reasoning' }, { name: '/memory', description: 'show local memory status' }, { name: '/reload', description: 'reload user plugins for the next run' }, { name: '/compact', description: 'compact current session' }, { name: '/status', description: 'show latest run evidence' }, { name: '/diff', description: 'show tracked file changes' }, { name: '/undo', description: 'undo the latest tracked file change' },
+  { name: '/thinking', description: 'alias for /reasoning' }, { name: '/memory', description: 'show local memory status' }, { name: '/reload', description: 'reload plugins and MCP for the next run' }, { name: '/compact', description: 'compact current session' }, { name: '/status', description: 'show latest run evidence' }, { name: '/diff', description: 'show tracked file changes' }, { name: '/undo', description: 'undo the latest tracked file change' },
   { name: '/quit', description: 'exit TUI' }, { name: '/exit', description: 'exit TUI' },
 ] as const;
 
@@ -61,7 +61,7 @@ function TuiApp({ config, runPrompt, compactSession, memoryStatus, mcpRuntime }:
   const [editor, setEditor] = useState<EditorState>(() => createEditorState());
   const [messages, setMessages] = useState<TuiMessage[]>(() => config.session.id ? [{ role: 'system', text: 'Loading session history…' }] : [{ role: 'system', text: `nju-agent ${config.model.model} · type /help for commands` }]);
   const [status, setStatus] = useState<TuiStatus>(config.session.id ? 'hydrating' : 'idle');
-  const statusContext = { workspace: config.workspaceRoot, sessionId: undefined as string | undefined, model: config.model.model, effort: config.model.thinking.level, permissionMode: config.permissionMode, mcp: configuredMcpStatus(config.mcpServers, config.projectTrusted) };
+  const statusContext = { workspace: config.workspaceRoot, sessionId: undefined as string | undefined, model: config.model.model, effort: config.model.thinking.level, permissionMode: config.permissionMode, mcp: currentMcpStatus(mcpRuntime, config) };
   const [runStatus, setRunStatus] = useState<RunStatus>(() => createIdleRunStatus(statusContext));
   const [sessionId, setSessionId] = useState<string | undefined>(undefined);
   const [sessionLabel, setSessionLabel] = useState<string | undefined>(undefined);
@@ -167,7 +167,7 @@ function TuiApp({ config, runPrompt, compactSession, memoryStatus, mcpRuntime }:
       setHistoryHasMore(page.hasMore);
       setHistoryCursor(page.nextBeforeEntryId);
       setTranscriptOffset(0);
-      setRunStatus(createIdleRunStatus({ ...statusContext, sessionId: next, model: config.model.model, effort: config.model.thinking.level, mcp: configuredMcpStatus(config.mcpServers, config.projectTrusted, reloadMcp.current ? { status: 'scheduled', requested: true, changed: false, changes: [] } : undefined) }));
+      setRunStatus(createIdleRunStatus({ ...statusContext, sessionId: next, model: config.model.model, effort: config.model.thinking.level, mcp: currentMcpStatus(mcpRuntime, config) }));
       setStatus('idle');
     } catch (error) {
       if (signal.signal.aborted) {
@@ -527,7 +527,7 @@ async function handleCommand(line: string, ctx: CommandContext): Promise<void> {
     return;
   }
   if (line === '/compact') { if (!ctx.sessionId) { ctx.appendError('Start a session before compacting it.'); return; } try { const result = await ctx.compactSession(ctx.config, ctx.sessionId); ctx.appendSystem(result.compacted ? `Compacted ${result.omittedMessages} messages into a deterministic ${result.outputChars}-character summary.` : 'Not enough session history to compact.'); } catch (error) { ctx.appendError(`Could not compact session: ${asMessage(error)}`); } return; }
-  if (line === '/status') { try { const current = ctx.runStatus.state !== 'idle' ? ctx.runStatus : { ...ctx.runStatus, workspace: ctx.config.workspaceRoot, sessionId: ctx.sessionId, model: ctx.config.model.model, effort: ctx.config.model.thinking.level, permissionMode: ctx.config.permissionMode, mcp: configuredMcpStatus(ctx.config.mcpServers, ctx.config.projectTrusted, ctx.runStatus.mcp?.reload) }; ctx.appendSystem(formatRunStatus(current)); } catch (error) { ctx.appendError(`Could not show run status: ${asMessage(error)}`); } return; }
+  if (line === '/status') { try { const current = ctx.runStatus.state !== 'idle' ? ctx.runStatus : { ...ctx.runStatus, workspace: ctx.config.workspaceRoot, sessionId: ctx.sessionId, model: ctx.config.model.model, effort: ctx.config.model.thinking.level, permissionMode: ctx.config.permissionMode, mcp: currentMcpStatus(ctx.mcpRuntime, ctx.config) }; ctx.appendSystem(formatRunStatus(current)); } catch (error) { ctx.appendError(`Could not show run status: ${asMessage(error)}`); } return; }
   if (line === '/diff') { try { ctx.appendSystem(await new ChangeJournal(ctx.config.workspaceRoot).formatDiff(ctx.sessionId ? { sessionId: ctx.sessionId } : {})); } catch (error) { ctx.appendError(`Could not show tracked changes: ${asMessage(error)}`); } return; }
   if (line === '/undo') { try { const result = await new ChangeJournal(ctx.config.workspaceRoot).undoLast(ctx.sessionId ? { sessionId: ctx.sessionId } : {}); ctx.appendSystem(result.ok ? `Undid ${result.record.operation} ${result.record.relativePath}.` : `${result.code}: ${result.message}`); } catch (error) { ctx.appendError(`Could not undo tracked change: ${asMessage(error)}`); } return; }
   if (line === '/sessions') { if (!ctx.config.session.enabled) { ctx.appendSystem('Sessions are disabled.'); return; } const sessions = await new JsonlSessionStore(`${ctx.config.workspaceRoot}/.nju-agent`).list(); ctx.appendSystem(sessions.length ? sessions.map((item) => `${item.name ? `${item.name} · ` : ''}${item.id}`).join('\n') : 'No sessions.'); return; }
@@ -589,4 +589,8 @@ export async function findFileCompletions(workspaceRoot: string, query: string, 
   await visit(root);
   return results;
 }
+export function currentMcpStatus(mcpRuntime: McpRuntime, config: AgentConfig): McpStatus {
+  return mcpRuntime.manager.status(configuredMcpStatus(config.mcpServers, config.projectTrusted).configured);
+}
+
 function asMessage(error: unknown): string { return error instanceof Error ? error.message : String(error); }

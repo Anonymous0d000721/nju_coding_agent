@@ -20,7 +20,7 @@
 | 命令 | 结果 |
 |---|---|
 | `npm ci` | 通过，重新安装 91 个依赖包 |
-| `npm test -- --run` | 通过，38 个测试文件、202 个测试 |
+| `npm test -- --run` | 通过，38 个测试文件、203 个测试 |
 | `npm run typecheck` | 通过 |
 | `npm run build` | 通过 |
 | `git diff --check` | 通过 |
@@ -55,9 +55,9 @@
 - 构建、示例和 offline 验收产生的根 `dist`、示例 `runtime`、本地日志及依赖目录均为忽略生成物，不进入提交。
 - README 已补充 `NJU_AGENT_MAX_DURATION_MS`（默认 600000，范围 1–1800000）和 `NJU_AGENT_MAX_TOOL_CONCURRENCY`（默认 4，范围 1–8）；CLI help 同步展示两项配置。
 - 用户插件在独立 Node permission 子进程中加载和调用，并在 worker 内通过无宿主引用的 `vm.SourceTextModule` context 执行；静态与动态 import 统一拒绝，计算得到的网络/子进程模块名也有回归覆盖。workspace capability 经 request/response RPC 保留，取消、子进程退出、加载超时和 fail-soft 诊断有回归覆盖；对应提交 `808546e`、`5e02505`。只读或 `read` 工具只获得 `readText`，写入工具才获得 `writeText`；宿主执行层和 sandbox worker 均有对抗性回归测试，防止只读插件绕过 policy 直接修改工作区。插件的 `readText` 和 `writeText` 都在 capability 层拒绝 `.git`、`.nju-agent`、`node_modules`、`.env`、SSH、证书、token、secret、credential 等敏感路径，硬编码敏感读取也有回归覆盖。
-- MCP 的进程级 `McpRuntime` 在 RPC/TUI 生命周期内复用 `McpManager`；下一次运行通过真实 `McpManager.reload()` 比较工具目录，失败保留旧实例，配置移除会断开旧 server；活动运行不热替换。
+- MCP 的进程级 `McpRuntime` 在 RPC/TUI 生命周期内复用 `McpManager`；下一次运行通过真实 `McpManager.reload()` 比较工具目录，失败保留旧实例，配置移除会断开旧 server；活动运行不热替换。TUI 空闲 `/status` 与切换 session 也读取实时 MCP server、工具目录、健康和 reload 状态。
 - RPC/TUI `/reload` 的临时插件 sandbox 均在 `finally` 中释放，避免只为计数而遗留 worker。
-- P2 `4.1`、`4.2`、`4.3`、`4.4` 的全部 checkbox 已与源码、测试、文档和独立提交对应；用户插件开发规范与公开 skill 还明确列出正常、非法参数、权限拒绝、越界、取消、超时、fail-soft、冲突、reload 和脱敏测试要求。插件 VM 隔离与动态导入回归后全量测试为 38 个测试文件、202 个测试。
+- P2 `4.1`、`4.2`、`4.3`、`4.4` 的全部 checkbox 已与源码、测试、文档和独立提交对应；用户插件开发规范与公开 skill 还明确列出正常、非法参数、权限拒绝、越界、取消、超时、fail-soft、冲突、reload 和脱敏测试要求。TUI MCP 状态回归后全量测试为 38 个测试文件、203 个测试。
 
 ## 已知限制
 
