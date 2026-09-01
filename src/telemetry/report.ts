@@ -4,6 +4,7 @@ import type { AgentRunProgress, AgentRunResult, VerificationSummary } from '../a
 import type { ConvergenceSummary } from '../agent/convergence.js';
 import type { ToolResult } from '../tools/types.js';
 import { redact } from '../shared/redact.js';
+import { catalogHash, emptyMcpStatus, type McpStatus } from '../mcp/client.js';
 
 export interface CommandStatus {
   command?: string;
@@ -44,6 +45,8 @@ export interface RunStatus {
   endedAt?: string;
   elapsedMs?: number;
   budget?: { maxDurationMs?: number; exhausted?: boolean };
+  /** Present in newly-created statuses; omitted by legacy callers is normalized to an empty snapshot. */
+  mcp?: McpStatus;
 }
 
 export interface RunReport extends RunStatus {
@@ -57,6 +60,7 @@ export interface RunStatusContext {
   model: string;
   effort: string;
   permissionMode: string;
+  mcp?: McpStatus;
 }
 
 export function createIdleRunStatus(context: RunStatusContext, runId = ''): RunStatus {
@@ -80,6 +84,7 @@ export function createIdleRunStatus(context: RunStatusContext, runId = ''): RunS
     compactions: 0,
     warnings: [],
     errors: [],
+    mcp: context.mcp ?? emptyMcpStatus(),
   };
 }
 
@@ -155,6 +160,7 @@ export function createRunStatus(runId: string, result: AgentRunResult, context: 
     ...(result.endedAt ? { endedAt: result.endedAt } : {}),
     ...(result.elapsedMs !== undefined ? { elapsedMs: result.elapsedMs } : {}),
     ...(result.budget ? { budget: result.budget } : {}),
+    mcp: context.mcp ?? emptyMcpStatus(),
   };
 }
 
@@ -229,9 +235,55 @@ function normalizeRunReport(value: unknown, fallbackRunId: string): RunReport | 
     ...(typeof source.endedAt === 'string' ? { endedAt: source.endedAt } : {}),
     ...(typeof source.elapsedMs === 'number' ? { elapsedMs: source.elapsedMs } : {}),
     ...(asRecord(source.budget) ? { budget: { ...(typeof asRecord(source.budget)?.maxDurationMs === 'number' ? { maxDurationMs: asRecord(source.budget)?.maxDurationMs as number } : {}), ...(asRecord(source.budget)?.exhausted === true ? { exhausted: true } : {}) } } : {}),
+    mcp: normalizeMcpStatus(source.mcp),
   };
 }
 
+function normalizeMcpStatus(value: unknown): McpStatus {
+  const source = asRecord(value);
+  const configured = arrayOfRecords(source?.configured).map((server) => ({
+    name: typeof server.name === 'string' ? server.name : 'unknown',
+    command: typeof server.command === 'string' ? redact(server.command) : '',
+    ...(typeof server.cwd === 'string' ? { cwd: server.cwd } : {}),
+    enabled: server.enabled === true,
+    ...(typeof server.reason === 'string' ? { reason: server.reason } : {}),
+  }));
+  const servers = arrayOfRecords(source?.servers).map((server) => ({
+    name: typeof server.name === 'string' ? server.name : 'unknown',
+    state: (server.state === 'failed' || server.state === 'closed' ? server.state : 'connected') as McpStatus['servers'][number]['state'],
+    toolCount: numberOrZero(server.toolCount),
+    activeCalls: numberOrZero(server.activeCalls),
+    connectedAt: typeof server.connectedAt === 'string' ? server.connectedAt : new Date(0).toISOString(),
+    ...(typeof server.protocolVersion === 'string' ? { protocolVersion: server.protocolVersion } : {}),
+    ...(typeof server.version === 'string' ? { version: server.version } : {}),
+    ...(typeof server.restartCount === 'number' ? { restartCount: server.restartCount } : {}),
+    ...(typeof server.error === 'string' ? { error: redact(server.error) } : {}),
+    ...(typeof server.stderrTail === 'string' ? { stderrTail: tail(server.stderrTail, 2_000) } : {}),
+    ...(typeof server.pid === 'number' ? { pid: server.pid } : {}),
+  }));
+  const toolCatalog = arrayOfRecords(source?.toolCatalog).map((tool) => ({
+    qualifiedName: typeof tool.qualifiedName === 'string' ? tool.qualifiedName : 'unknown',
+    server: typeof tool.server === 'string' ? tool.server : 'unknown',
+    name: typeof tool.name === 'string' ? tool.name : 'unknown',
+    description: typeof tool.description === 'string' ? tool.description.slice(0, 2_000) : '',
+    risk: isMcpRisk(tool.risk) ? tool.risk : 'unknown',
+    schema: asRecord(tool.schema) ?? { type: 'object' },
+  }));
+  const reloadSource = asRecord(source?.reload);
+  const reload = {
+    status: isMcpReloadStatus(reloadSource?.status) ? reloadSource.status : 'idle' as const,
+    requested: reloadSource?.requested === true,
+    changed: reloadSource?.changed === true,
+    changes: arrayOfRecords(reloadSource?.changes).flatMap((change) => typeof change.qualifiedName === 'string' && isMcpChangeKind(change.kind) ? [{ qualifiedName: change.qualifiedName, kind: change.kind }] : []),
+    ...(typeof reloadSource?.at === 'string' ? { at: reloadSource.at } : {}),
+    ...(typeof reloadSource?.error === 'string' ? { error: redact(reloadSource.error) } : {}),
+  };
+  return { configured, servers, toolCatalog, catalogHash: typeof source?.catalogHash === 'string' ? source.catalogHash : catalogHash(toolCatalog), reload };
+}
+
+function isMcpRisk(value: unknown): value is McpStatus['toolCatalog'][number]['risk'] { return value === 'readonly' || value === 'workspace_mutation' || value === 'external_side_effect' || value === 'unknown'; }
+function isMcpReloadStatus(value: unknown): value is McpStatus['reload']['status'] { return value === 'idle' || value === 'scheduled' || value === 'applied' || value === 'failed'; }
+function isMcpChangeKind(value: unknown): value is McpStatus['reload']['changes'][number]['kind'] { return value === 'added' || value === 'removed' || value === 'risk_changed' || value === 'schema_changed' || value === 'description_changed'; }
 function normalizeVerification(value: unknown): VerificationSummary {
   const source = asRecord(value);
   const plan = asRecord(source?.plan);

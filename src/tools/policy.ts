@@ -39,6 +39,8 @@ export function decidePolicy(input: PolicyInput): PolicyDecision {
 
 export function applyPermissionMode(decision: PolicyDecision, mode: PermissionMode, hasApprovalCallback: boolean): PolicyDecision {
   if (decision.risk === 'blocked' || decision.action === 'deny') return { ...decision, action: 'deny' };
+  // External effects and unknown provenance never become implicitly allowed in yolo mode.
+  if (decision.operationClass === 'external') return { ...decision, action: hasApprovalCallback ? 'ask' : 'deny' };
   if (mode === 'yolo') return { ...decision, action: 'allow' };
   if (decision.risk === 'low') return { ...decision, action: 'allow' };
   return { ...decision, action: hasApprovalCallback ? 'ask' : 'deny' };

@@ -4,7 +4,7 @@ import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { ToolExecutor } from '../../src/tools/executor.js';
 import { ToolRegistry } from '../../src/tools/registry.js';
-import { decidePolicy } from '../../src/tools/policy.js';
+import { applyPermissionMode, decidePolicy } from '../../src/tools/policy.js';
 import { ApprovalBroker } from '../../src/tools/approval.js';
 
 const tool = (risk: 'read' | 'write' | 'shell' | 'external', readonly = false) => ({
@@ -52,6 +52,13 @@ describe('unified tool policy', () => {
     registry.register({ name: 'write_file', description: 'write', parameters: { type: 'object' }, risk: 'write', readonly: false, handler: () => { throw new Error('must not execute'); } });
     const [result] = await new ToolExecutor(registry, { workspaceRoot: process.cwd(), permissionMode: 'confirm', approve: (_tool, _decision, _args, request, context) => broker.request(request, context.signal) }).executeBatch([{ id: 'approval-timeout', name: 'write_file', argumentsJson: '{}' }]);
     expect(result).toMatchObject({ ok: false, error: { code: 'approval_timeout' }, approval: { outcome: 'timeout' } });
+  });
+
+  it('never implicitly allows external-side-effect tools in yolo mode', () => {
+    const external = { ...tool('external'), riskCategory: 'external_side_effect' as const };
+    expect(decidePolicy({ tool: external, args: {}, workspaceRoot: process.cwd(), permissionMode: 'yolo' })).toMatchObject({ action: 'ask', operationClass: 'external' });
+    expect(applyPermissionMode(decidePolicy({ tool: external, args: {}, workspaceRoot: process.cwd(), permissionMode: 'yolo' }), 'yolo', false)).toMatchObject({ action: 'deny' });
+    expect(applyPermissionMode(decidePolicy({ tool: external, args: {}, workspaceRoot: process.cwd(), permissionMode: 'yolo' }), 'yolo', true)).toMatchObject({ action: 'ask' });
   });
 
   it('records a redacted policy decision for an approved mutation', async () => {

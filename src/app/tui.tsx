@@ -21,6 +21,7 @@ import type { AppResult, AppServices, compactSession, memoryStatus, runPrompt } 
 import { loadUserPlugins } from '../plugins/loader.js';
 import { ChangeJournal } from '../telemetry/journal.js';
 import { createIdleRunStatus, createRunningRunStatus, type RunStatus } from '../telemetry/report.js';
+import { configuredMcpStatus } from '../mcp/client.js';
 
 export type RunPrompt = typeof runPrompt;
 export interface TuiOptions { config: AgentConfig; services: AppServices; runPrompt: RunPrompt; compactSession: typeof compactSession; memoryStatus: typeof memoryStatus; }
@@ -53,14 +54,16 @@ function TuiApp({ config, runPrompt, compactSession, memoryStatus }: TuiOptions)
   const [editor, setEditor] = useState<EditorState>(() => createEditorState());
   const [messages, setMessages] = useState<TuiMessage[]>(() => config.session.id ? [{ role: 'system', text: 'Loading session history…' }] : [{ role: 'system', text: `nju-agent ${config.model.model} · type /help for commands` }]);
   const [status, setStatus] = useState<TuiStatus>(config.session.id ? 'hydrating' : 'idle');
-  const statusContext = { workspace: config.workspaceRoot, sessionId: undefined as string | undefined, model: config.model.model, effort: config.model.thinking.level, permissionMode: config.permissionMode };
+  const statusContext = { workspace: config.workspaceRoot, sessionId: undefined as string | undefined, model: config.model.model, effort: config.model.thinking.level, permissionMode: config.permissionMode, mcp: configuredMcpStatus(config.mcpServers, config.projectTrusted) };
   const [runStatus, setRunStatus] = useState<RunStatus>(() => createIdleRunStatus(statusContext));
   const [sessionId, setSessionId] = useState<string | undefined>(undefined);
   const [sessionLabel, setSessionLabel] = useState<string | undefined>(undefined);
   const [approval, setApproval] = useState<ApprovalRequest>();
   const [showReasoning, setShowReasoning] = useState(true);
   const reloadPlugins = useRef(false);
+  const reloadMcp = useRef(false);
   const markPluginsForReload = () => { reloadPlugins.current = true; };
+  const markMcpForReload = () => { reloadMcp.current = true; };
   const [picker, setPicker] = useState<PickerState>();
   const [pasteBuffer, setPasteBuffer] = useState('');
   const [completionIndex, setCompletionIndex] = useState(0);
@@ -157,7 +160,7 @@ function TuiApp({ config, runPrompt, compactSession, memoryStatus }: TuiOptions)
       setHistoryHasMore(page.hasMore);
       setHistoryCursor(page.nextBeforeEntryId);
       setTranscriptOffset(0);
-      setRunStatus(createIdleRunStatus({ ...statusContext, sessionId: next, model: config.model.model, effort: config.model.thinking.level }));
+      setRunStatus(createIdleRunStatus({ ...statusContext, sessionId: next, model: config.model.model, effort: config.model.thinking.level, mcp: configuredMcpStatus(config.mcpServers, config.projectTrusted, reloadMcp.current ? { status: 'scheduled', requested: true, changed: false, changes: [] } : undefined) }));
       setStatus('idle');
     } catch (error) {
       if (signal.signal.aborted) {
@@ -236,12 +239,13 @@ function TuiApp({ config, runPrompt, compactSession, memoryStatus }: TuiOptions)
     if (status === 'hydrating' || status === 'running' || status === 'cancelling') return;
     const submitted = submitEditor(editor); if (!submitted.prompt) return;
     setEditor(submitted.state); setTranscriptOffset(0); const raw = submitted.prompt; const line = raw.trim();
-    if (line.startsWith('/')) { await handleCommand(line, { app, config, sessionId, setSessionId, setSessionLabel, showReasoning, setShowReasoning, openPicker, appendSystem, appendError, persistEffort, setModel, resumeSession, compactSession, memoryStatus, markPluginsForReload, runStatus }); return; }
+    if (line.startsWith('/')) { await handleCommand(line, { app, config, sessionId, setSessionId, setSessionLabel, showReasoning, setShowReasoning, openPicker, appendSystem, appendError, persistEffort, setModel, resumeSession, compactSession, memoryStatus, markPluginsForReload, markMcpForReload, setRunStatus, runStatus }); return; }
     append({ role: 'user', text: raw }); setStatus('running'); const signal = new AbortController(); controller.current = signal;
     try {
       setRunStatus(createRunningRunStatus('', { ...statusContext, sessionId, model: config.model.model, effort: config.model.thinking.level }));
-      const result = await runPrompt(config, raw, sessionId, 'text', config.model.thinking, undefined, showReasoning, (event) => setMessages((items) => applyAgentEvent(items, event, showReasoning)), signal.signal, requestApproval, reloadPlugins.current, runControl.current, (nextStatus) => setRunStatus(nextStatus));
+      const result = await runPrompt(config, raw, sessionId, 'text', config.model.thinking, undefined, showReasoning, (event) => setMessages((items) => applyAgentEvent(items, event, showReasoning)), signal.signal, requestApproval, reloadPlugins.current, runControl.current, (nextStatus) => setRunStatus(nextStatus), reloadMcp.current);
       reloadPlugins.current = false;
+      reloadMcp.current = false;
       if (result.status) setRunStatus(result.status);
       if (result.sessionId) {
         setSessionId(result.sessionId);
@@ -303,7 +307,7 @@ function TuiApp({ config, runPrompt, compactSession, memoryStatus }: TuiOptions)
       if (selected) {
         if (key.return && selected.kind === 'command') {
           updateEditor((state) => createEditorState(state.history));
-          void handleCommand(selected.name, { app, config, sessionId, setSessionId, setSessionLabel, showReasoning, setShowReasoning, openPicker, appendSystem, appendError, persistEffort, setModel, resumeSession, compactSession, memoryStatus, markPluginsForReload, runStatus });
+          void handleCommand(selected.name, { app, config, sessionId, setSessionId, setSessionLabel, showReasoning, setShowReasoning, openPicker, appendSystem, appendError, persistEffort, setModel, resumeSession, compactSession, memoryStatus, markPluginsForReload, markMcpForReload, setRunStatus, runStatus });
         } else {
           updateEditor((state) => replaceFileReference(state, selected.name));
         }
@@ -367,9 +371,10 @@ export function formatRunStatus(status: RunStatus): string {
   const files = status.filesChanged.length ? status.filesChanged.join(', ') : '(none)';
   const warnings = status.warnings.length ? `\nwarnings: ${status.warnings.join(' | ')}` : '';
   const errors = status.errors.length ? `\nerrors: ${status.errors.join(' | ')}` : '';
+  const mcp = status.mcp ? `\nMCP: ${status.mcp.configured.length} configured, ${status.mcp.servers.length} server(s), ${status.mcp.toolCatalog.length} tool(s), catalog ${status.mcp.catalogHash.slice(0, 12)} · reload ${status.mcp.reload.status}${status.mcp.servers.length ? `\nMCP health: ${status.mcp.servers.map((server) => `${server.name}:${server.state}${server.version ? `@${server.version}` : ''}`).join(', ')}` : ''}` : '';
   const stopReason = status.stopReason ?? (status.state === 'idle' ? '(not started)' : '(running)');
   const currentTool = status.currentToolName ? `\ncurrent tool: ${status.currentToolName}` : '';
-  return `run: ${status.state}\nworkspace: ${status.workspace}\nsession: ${status.sessionId ?? '(new)'}\nmodel: ${status.model}\neffort: ${status.effort}\npermission: ${status.permissionMode}\nturns: ${status.turns} · tool calls: ${status.toolCalls} (${status.toolSuccesses} ok, ${status.toolFailures} failed)${currentTool}\nverification: ${status.verification.status}\ncompactions: ${status.compactions}${status.lastCompactionReason ? ` · ${status.lastCompactionReason}` : ''}\nstop reason: ${stopReason}\nchanged files: ${files}${commandLine}${warnings}${errors}`;
+  return `run: ${status.state}\nworkspace: ${status.workspace}\nsession: ${status.sessionId ?? '(new)'}\nmodel: ${status.model}\neffort: ${status.effort}\npermission: ${status.permissionMode}\nturns: ${status.turns} · tool calls: ${status.toolCalls} (${status.toolSuccesses} ok, ${status.toolFailures} failed)${currentTool}\nverification: ${status.verification.status}\ncompactions: ${status.compactions}${status.lastCompactionReason ? ` · ${status.lastCompactionReason}` : ''}\nstop reason: ${stopReason}\nchanged files: ${files}${mcp}${commandLine}${warnings}${errors}`;
 }
 
 export function editorLinesWithCursor(editor: EditorState): Array<{ before: string; at: string; after: string }> {
@@ -487,7 +492,7 @@ export function toggleLastToolDetails(messages: TuiMessage[]): TuiMessage[] {
 
 function appendToLast(messages: TuiMessage[], role: 'assistant' | 'thinking', delta: string): TuiMessage[] { const last = messages.at(-1); return last?.role === role ? [...messages.slice(0, -1), { role, text: `${last.text}${delta}` }] : [...messages, { role, text: delta }]; }
 function toolDetail(content: string): string { const redacted = redact(content); const lines = redacted.split(/\r?\n/); return lines.length > 120 ? `${lines.slice(0, 120).join('\n')}\n…` : redacted; }
-interface CommandContext { app: ReturnType<typeof useApp>; config: AgentConfig; sessionId?: string; setSessionId: (value: string | undefined) => void; setSessionLabel: (value: string | undefined) => void; showReasoning: boolean; markPluginsForReload: () => void; setShowReasoning: (value: boolean) => void; openPicker: (kind: PickerKind) => Promise<void>; appendSystem: (text: string) => void; appendError: (text: string) => void; persistEffort: (level: ThinkingLevel, targetSessionId?: string) => Promise<void>; setModel: (model: string) => void; resumeSession: (sessionId?: string) => Promise<void>; compactSession: typeof compactSession; memoryStatus: typeof memoryStatus; runStatus: RunStatus; }
+interface CommandContext { app: ReturnType<typeof useApp>; config: AgentConfig; sessionId?: string; setSessionId: (value: string | undefined) => void; setSessionLabel: (value: string | undefined) => void; showReasoning: boolean; markPluginsForReload: () => void; markMcpForReload: () => void; setRunStatus: (status: RunStatus) => void; setShowReasoning: (value: boolean) => void; openPicker: (kind: PickerKind) => Promise<void>; appendSystem: (text: string) => void; appendError: (text: string) => void; persistEffort: (level: ThinkingLevel, targetSessionId?: string) => Promise<void>; setModel: (model: string) => void; resumeSession: (sessionId?: string) => Promise<void>; compactSession: typeof compactSession; memoryStatus: typeof memoryStatus; runStatus: RunStatus; }
 async function handleCommand(line: string, ctx: CommandContext): Promise<void> {
   if (line === '/quit' || line === '/exit') { ctx.app.exit(); return; } if (line === '/help') { ctx.appendSystem(renderHelp().trim()); return; } if (line === '/new') { await ctx.resumeSession(undefined); return; }
   if (line === '/trust') { new ProjectTrustStore().trust(ctx.config.workspaceRoot); ctx.config.projectTrusted = true; ctx.appendSystem('Workspace trusted for future runs.'); return; }
@@ -498,9 +503,9 @@ async function handleCommand(line: string, ctx: CommandContext): Promise<void> {
   if (line === '/effort') { await ctx.openPicker('effort'); return; } if (line.startsWith('/effort ')) { const requested = line.slice(8).trim(); if (!isThinkingLevel(requested)) { ctx.appendError(`Invalid effort: ${requested}. Expected: ${supportedEffortText(ctx.config)}`); return; } const level = clampThinkingLevel(requested, ctx.config.model.thinking.map); await ctx.persistEffort(level); ctx.appendSystem(`effort: ${level}`); return; }
   if (line === '/model') { await ctx.openPicker('model'); return; } if (line.startsWith('/model ')) { ctx.setModel(line.slice(7).trim()); return; }
   if (line === '/memory') { const status = ctx.memoryStatus(ctx.config); ctx.appendSystem(`memory: ${status.enabled ? 'enabled' : 'disabled'}\ndirectory: ${status.directory}\nindex: ${status.indexExists ? `${status.indexLines} lines, ${status.indexBytes} bytes${status.truncated ? ' (truncated for context)' : ''}` : 'not created'}\ntopics: ${status.topics.join(', ') || '(none)'}`); return; }
-  if (line === '/reload') { try { const plugins = await loadUserPlugins(ctx.config.workspaceRoot, ctx.config.projectTrusted, true); ctx.markPluginsForReload(); ctx.appendSystem(`Reloaded ${plugins.length} user plugin(s). New tools will be active on the next agent run.`); } catch (error) { ctx.appendError(`Could not reload tools: ${asMessage(error)}`); } return; }
+  if (line === '/reload') { try { const plugins = await loadUserPlugins(ctx.config.workspaceRoot, ctx.config.projectTrusted, true); ctx.markPluginsForReload(); ctx.markMcpForReload(); ctx.setRunStatus({ ...ctx.runStatus, mcp: configuredMcpStatus(ctx.config.mcpServers, ctx.config.projectTrusted, { status: 'scheduled', requested: true, changed: false, changes: [] }) }); ctx.appendSystem(`Reloaded ${plugins.length} user plugin(s) and scheduled MCP refresh. New tools will be active on the next agent run.`); } catch (error) { ctx.appendError(`Could not reload tools: ${asMessage(error)}`); } return; }
   if (line === '/compact') { if (!ctx.sessionId) { ctx.appendError('Start a session before compacting it.'); return; } try { const result = await ctx.compactSession(ctx.config, ctx.sessionId); ctx.appendSystem(result.compacted ? `Compacted ${result.omittedMessages} messages into a deterministic ${result.outputChars}-character summary.` : 'Not enough session history to compact.'); } catch (error) { ctx.appendError(`Could not compact session: ${asMessage(error)}`); } return; }
-  if (line === '/status') { try { const current = ctx.runStatus.state !== 'idle' ? ctx.runStatus : createIdleRunStatus({ workspace: ctx.config.workspaceRoot, sessionId: ctx.sessionId, model: ctx.config.model.model, effort: ctx.config.model.thinking.level, permissionMode: ctx.config.permissionMode }); ctx.appendSystem(formatRunStatus(current)); } catch (error) { ctx.appendError(`Could not show run status: ${asMessage(error)}`); } return; }
+  if (line === '/status') { try { const current = ctx.runStatus.state !== 'idle' ? ctx.runStatus : { ...ctx.runStatus, workspace: ctx.config.workspaceRoot, sessionId: ctx.sessionId, model: ctx.config.model.model, effort: ctx.config.model.thinking.level, permissionMode: ctx.config.permissionMode, mcp: configuredMcpStatus(ctx.config.mcpServers, ctx.config.projectTrusted, ctx.runStatus.mcp?.reload) }; ctx.appendSystem(formatRunStatus(current)); } catch (error) { ctx.appendError(`Could not show run status: ${asMessage(error)}`); } return; }
   if (line === '/diff') { try { ctx.appendSystem(await new ChangeJournal(ctx.config.workspaceRoot).formatDiff(ctx.sessionId ? { sessionId: ctx.sessionId } : {})); } catch (error) { ctx.appendError(`Could not show tracked changes: ${asMessage(error)}`); } return; }
   if (line === '/undo') { try { const result = await new ChangeJournal(ctx.config.workspaceRoot).undoLast(ctx.sessionId ? { sessionId: ctx.sessionId } : {}); ctx.appendSystem(result.ok ? `Undid ${result.record.operation} ${result.record.relativePath}.` : `${result.code}: ${result.message}`); } catch (error) { ctx.appendError(`Could not undo tracked change: ${asMessage(error)}`); } return; }
   if (line === '/sessions') { if (!ctx.config.session.enabled) { ctx.appendSystem('Sessions are disabled.'); return; } const sessions = await new JsonlSessionStore(`${ctx.config.workspaceRoot}/.nju-agent`).list(); ctx.appendSystem(sessions.length ? sessions.map((item) => `${item.name ? `${item.name} · ` : ''}${item.id}`).join('\n') : 'No sessions.'); return; }

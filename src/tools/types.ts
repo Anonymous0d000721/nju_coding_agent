@@ -3,6 +3,7 @@ import type { ApprovalRecord, ApprovalRequest, ApprovalResolution } from './appr
 
 export type JsonSchema = Record<string, unknown>;
 export type ToolRisk = 'read' | 'write' | 'shell' | 'external';
+export type ToolRiskCategory = 'readonly' | 'workspace_mutation' | 'external_side_effect' | 'unknown';
 export type OperationClass = 'read' | 'mutating' | 'shell' | 'external';
 export type RiskLevel = 'low' | 'medium' | 'high' | 'blocked';
 export type PolicyAction = 'allow' | 'ask' | 'deny';
@@ -31,6 +32,8 @@ export interface ToolDefinition<TArgs = unknown> {
   parameters: JsonSchema;
   risk: ToolRisk;
   readonly: boolean;
+  /** Optional finer-grained provenance supplied by external tool adapters. */
+  riskCategory?: ToolRiskCategory;
   timeoutMs?: number;
   handler: ToolHandler<TArgs>;
 }

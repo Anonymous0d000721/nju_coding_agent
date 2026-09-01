@@ -28,7 +28,7 @@ import { TelemetryStore } from '../telemetry/store.js';
 import { ChangeJournal } from '../telemetry/journal.js';
 import { createProgressRunStatus, createRunReport, createRunStatus, createRunningRunStatus, writeRunReport, type RunStatus } from '../telemetry/report.js';
 import { withRetryingModelClient } from '../model/retry.js';
-import { McpManager } from '../mcp/client.js';
+import { McpManager, type McpConfiguredServer } from '../mcp/client.js';
 import { createStdioTransport } from '../mcp/stdio.js';
 import { registerMcpTools } from '../mcp/registry-adapter.js';
 import { loadUserPluginReport } from '../plugins/loader.js';
@@ -77,7 +77,7 @@ export function createApp(services: AppServices) {
   };
 }
 
-export async function runPrompt(config: AgentConfig, prompt: string, sessionId?: string, mode: 'text' | 'json' = 'text', thinking = config.model.thinking, streamOutput?: NodeJS.WritableStream, showThinking = false, onAgentEvent?: (event: AgentStreamEvent) => void | Promise<void>, signal?: AbortSignal, approveTool?: ToolApprovalHandler, reloadPlugins = false, control?: AgentRunControl, onRunProgress?: (status: RunStatus) => void | Promise<void>): Promise<AppResult> {
+export async function runPrompt(config: AgentConfig, prompt: string, sessionId?: string, mode: 'text' | 'json' = 'text', thinking = config.model.thinking, streamOutput?: NodeJS.WritableStream, showThinking = false, onAgentEvent?: (event: AgentStreamEvent) => void | Promise<void>, signal?: AbortSignal, approveTool?: ToolApprovalHandler, reloadPlugins = false, control?: AgentRunControl, onRunProgress?: (status: RunStatus) => void | Promise<void>, reloadMcp = false): Promise<AppResult> {
   if (!config.model.apiKey) return missingAuth(mode);
   const registry = new ToolRegistry();
   for (const tool of createFileTools()) registry.register(tool);
@@ -101,20 +101,26 @@ export async function runPrompt(config: AgentConfig, prompt: string, sessionId?:
   const runId = randomUUID();
   const recordMcpEvent = (type: 'mcp_connect' | 'mcp_disconnect', data: Record<string, unknown>) => telemetry.append({ type, sessionId: sessionStore ? sessionId : undefined, runId, data });
   const mcp = new McpManager(config.mcpTimeoutMs);
+  if (reloadMcp) mcp.requestReload();
+  const configuredMcp: McpConfiguredServer[] = config.mcpServers.map((server) => ({ name: server.name, command: server.command, ...(server.cwd ? { cwd: server.cwd } : {}), enabled: config.projectTrusted, ...(config.projectTrusted ? {} : { reason: 'workspace_untrusted' }) }));
   const mcpServers = config.projectTrusted ? config.mcpServers : [];
-  try {
-    for (const server of mcpServers) {
+  let mcpConnectFailures = 0;
+  for (const server of mcpServers) {
+    try {
       const serverCwd = await resolveWorkspacePath(config.workspaceRoot, server.cwd ?? '.');
       await mcp.connect(server.name, createStdioTransport({ command: server.command, args: server.args, cwd: serverCwd.absolutePath, env: server.env }));
+      await recordMcpEvent('mcp_connect', { server: server.name, state: 'connected' });
+    } catch (error) {
+      mcpConnectFailures += 1;
+      await telemetry.append({ type: 'mcp_error', runId, data: { server: server.name, message: redact(error instanceof Error ? error.message : String(error), { extraSecrets: Object.values(config.model).filter((value): value is string => typeof value === 'string') }) } });
     }
-    registerMcpTools(mcp, registry);
-  } catch (error) {
-    await telemetry.append({ type: 'mcp_error', runId, data: { message: redact(error instanceof Error ? error.message : String(error), { extraSecrets: Object.values(config.model).filter((value): value is string => typeof value === 'string') }) } });
-    await mcp.disconnectAll();
-    throw error;
   }
+  if (reloadMcp) {
+    if (mcpConnectFailures > 0) mcp.markReloadFailed(new Error(`${mcpConnectFailures} MCP server(s) failed during reload.`));
+    else mcp.markReloadApplied();
+  }
+  registerMcpTools(mcp, registry);
   if (config.mcpServers.length > 0 && !config.projectTrusted) await telemetry.append({ type: 'mcp_skipped_untrusted', runId, data: { serverCount: config.mcpServers.length } });
-  for (const server of mcp.serversStatus()) await recordMcpEvent('mcp_connect', { server: server.name, toolCount: server.toolCount, pid: server.pid });
   const hooks = new HookRegistry();
   hooks.register({
     beforeModelRequest: async ({ turn }) => { await telemetry.append({ type: 'model_request_start', runId, data: { turn } }); },
@@ -200,6 +206,7 @@ export async function runPrompt(config: AgentConfig, prompt: string, sessionId?:
           model: config.model.model,
           effort: thinking.level,
           permissionMode: config.permissionMode,
+          mcp: mcp.status(configuredMcp),
         }));
       },
     }, signal);
@@ -212,6 +219,7 @@ export async function runPrompt(config: AgentConfig, prompt: string, sessionId?:
       model: config.model.model,
       effort: thinking.level,
       permissionMode: config.permissionMode,
+      mcp: mcp.status(configuredMcp),
     });
     if (config.telemetry !== 'off') {
       const report = createRunReport(runId, prompt, result, {
@@ -220,6 +228,7 @@ export async function runPrompt(config: AgentConfig, prompt: string, sessionId?:
         model: config.model.model,
         effort: thinking.level,
         permissionMode: config.permissionMode,
+        mcp: mcp.status(configuredMcp),
       });
       const reportPath = await writeRunReport(`${config.workspaceRoot}/.nju-agent/logs`, report);
       await telemetry.append({ type: 'run_report', sessionId: session?.id, runId, data: { path: reportPath, stopReason: report.stopReason, toolCalls: report.toolCalls } });
@@ -242,6 +251,7 @@ export async function runPrompt(config: AgentConfig, prompt: string, sessionId?:
       model: config.model.model,
       effort: thinking.level,
       permissionMode: config.permissionMode,
+      mcp: mcp.status(configuredMcp),
     }), state: 'failed' as const, stopReason: 'fatal_error' as const, errors: [message] };
     return mode === 'json'
       ? { exitCode: 3, stdout: `${JSON.stringify({ type: 'run_error', level: 'error', data: { message, status: failedStatus } })}\n`, sessionId: session?.id, status: failedStatus }

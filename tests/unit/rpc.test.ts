@@ -192,6 +192,31 @@ describe('JSON-RPC mode', () => {
     expect(approvalResolver).toBeUndefined();
   });
 
+  it('exposes MCP configuration and schedules plugin/MCP refresh through status and slash reload', async () => {
+    const input = new PassThrough();
+    const output = new PassThrough();
+    const rpc = runRpc({
+      config: { ...config('D:/rpc-test-mcp-status'), mcpServers: [{ name: 'local tools', command: 'node', args: ['server.mjs'] }] }, stdin: input, stdout: output,
+      runPrompt: async () => ({ exitCode: 0 }),
+      compactSession: async () => ({ compacted: false, omittedMessages: 0, outputChars: 0 }),
+    });
+    input.write('{"jsonrpc":"2.0","id":"s","method":"status"}\n');
+    await tick();
+    let messages = lines(output);
+    expect(messages.find((message) => message.id === 's')?.result).toMatchObject({ mcp: { configured: [{ name: 'local tools', enabled: false, reason: 'workspace_untrusted' }], servers: [], toolCatalog: [], reload: { status: 'idle' } } });
+
+    input.write('{"jsonrpc":"2.0","id":"r","method":"slash","params":{"command":"/reload"}}\n');
+    await tick();
+    messages = lines(output);
+    expect(messages.find((message) => message.id === 'r')?.result).toMatchObject({ reloaded: 0, mcp: true, nextRun: true });
+    input.write('{"jsonrpc":"2.0","id":"s2","method":"status"}\n');
+    await tick();
+    messages = lines(output);
+    expect(messages.find((message) => message.id === 's2')?.result).toMatchObject({ mcp: { reload: { status: 'scheduled', requested: true } } });
+    input.write('{"jsonrpc":"2.0","id":"q","method":"shutdown"}\n');
+    await rpc;
+  });
+
   it('returns JSON-RPC errors for malformed JSON, unknown methods, and invalid parameters', async () => {
     const input = new PassThrough();
     const output = new PassThrough();

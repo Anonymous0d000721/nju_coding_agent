@@ -15,6 +15,7 @@ import { ProjectTrustStore } from '../shared/trust.js';
 import type { AppResult } from './app.js';
 import { ChangeJournal } from '../telemetry/journal.js';
 import { createIdleRunStatus, createRunningRunStatus, type RunStatus, type RunStatusContext } from '../telemetry/report.js';
+import { configuredMcpStatus } from '../mcp/client.js';
 
 interface RpcRequest {
   jsonrpc?: string;
@@ -41,13 +42,15 @@ interface RpcDeps {
     reloadPlugins?: boolean,
     control?: AgentRunControl,
     onRunProgress?: (status: RunStatus) => void | Promise<void>,
+    reloadMcp?: boolean,
   ) => Promise<AppResult>;
   compactSession: (config: AgentConfig, sessionId: string) => Promise<{ compacted: boolean; omittedMessages: number; outputChars: number }>;
   approvalTimeoutMs?: number;
 }
 
-function statusContext(config: AgentConfig, sessionId?: string): RunStatusContext {
-  return { workspace: config.workspaceRoot, sessionId, model: config.model.model, effort: config.model.thinking.level, permissionMode: config.permissionMode };
+function statusContext(config: AgentConfig, sessionId?: string, reloadMcp = false): RunStatusContext {
+  const reload = reloadMcp ? { status: 'scheduled' as const, requested: true, changed: false, changes: [] } : undefined;
+  return { workspace: config.workspaceRoot, sessionId, model: config.model.model, effort: config.model.thinking.level, permissionMode: config.permissionMode, mcp: configuredMcpStatus(config.mcpServers, config.projectTrusted, reload) };
 }
 
 export async function runRpc(deps: RpcDeps): Promise<AppResult> {
@@ -57,6 +60,7 @@ export async function runRpc(deps: RpcDeps): Promise<AppResult> {
   let activeRun: { runId: string; controller: AbortController; control: AgentRunControl; done: Promise<void>; status: RunStatus } | undefined;
   let latestStatus: RunStatus | undefined;
   let reloadPlugins = false;
+  let reloadMcp = false;
   let reasoningDisplay = false;
   let shuttingDown = false;
   const approvalBroker = new ApprovalBroker({
@@ -71,7 +75,7 @@ export async function runRpc(deps: RpcDeps): Promise<AppResult> {
   };
   const response = (id: RpcRequest['id'], result: unknown): void => write({ jsonrpc: '2.0', id, result });
   const event = (type: string, data: unknown, runId?: string): void => write({ jsonrpc: '2.0', method: 'event', params: { type, ...(runId ? { runId } : {}), data } });
-  const idleStatus = (): RunStatus => createIdleRunStatus(statusContext(deps.config, sessionId));
+  const idleStatus = (): RunStatus => createIdleRunStatus(statusContext(deps.config, sessionId, reloadMcp));
   const setActiveStatus = (runId: string, status: RunStatus): void => {
     if (activeRun?.runId !== runId) return;
     activeRun.status = status;
@@ -124,7 +128,7 @@ export async function runRpc(deps: RpcDeps): Promise<AppResult> {
           reply({ sessionId, runId: activeRun?.runId, running: Boolean(activeRun), status: activeRun?.status ?? latestStatus });
           return;
         case 'status': {
-          reply(activeRun?.status ?? latestStatus ?? createIdleRunStatus(statusContext(deps.config, sessionId)));
+          reply(activeRun?.status ?? latestStatus ?? idleStatus());
           return;
         }
         case 'approval/resolve': {
@@ -152,11 +156,15 @@ export async function runRpc(deps: RpcDeps): Promise<AppResult> {
           const selectedSession = typeof params.sessionId === 'string' ? params.sessionId : sessionId;
           if (selectedSession) sessionId = selectedSession;
           reply({ accepted: true, runId, sessionId });
-          const runningStatus = createRunningRunStatus(runId, statusContext(deps.config, sessionId));
+          const runReloadPlugins = reloadPlugins;
+          const runReloadMcp = reloadMcp;
+          reloadPlugins = false;
+          reloadMcp = false;
+          const runningStatus = createRunningRunStatus(runId, statusContext(deps.config, sessionId, runReloadMcp));
           activeRun = { runId, controller, control, done: Promise.resolve(), status: runningStatus };
           event('run_start', { sessionId, status: runningStatus }, runId);
           const approveTool: ToolApprovalHandler = (tool, decision, args, request, context) => approvalBroker.request({ ...request, runId }, context.signal);
-          const done = deps.runPrompt(deps.config, text, sessionId, 'text', deps.config.model.thinking, undefined, false, async (streamEvent) => emitAgentEvent(event, streamEvent, runId), controller.signal, approveTool, reloadPlugins, control, (status) => setActiveStatus(runId, status))
+          const done = deps.runPrompt(deps.config, text, sessionId, 'text', deps.config.model.thinking, undefined, false, async (streamEvent) => emitAgentEvent(event, streamEvent, runId), controller.signal, approveTool, runReloadPlugins, control, (status) => setActiveStatus(runId, status), runReloadMcp)
             .then((result) => {
               if (result.sessionId) sessionId = result.sessionId;
               const status = result.status ?? { ...createRunningRunStatus(runId, statusContext(deps.config, sessionId)), state: result.exitCode === 0 ? 'completed' as const : 'failed' as const };
@@ -259,7 +267,8 @@ export async function runRpc(deps: RpcDeps): Promise<AppResult> {
           } else if (command === '/reload') {
             const plugins = await loadUserPlugins(deps.config.workspaceRoot, deps.config.projectTrusted, true);
             reloadPlugins = true;
-            reply({ reloaded: plugins.length, nextRun: true });
+            reloadMcp = true;
+            reply({ reloaded: plugins.length, mcp: deps.config.mcpServers.length > 0, nextRun: true });
           } else if (command === '/compact') {
             if (!sessionId) throw rpcError(-32001, 'No active session');
             reply(await deps.compactSession(deps.config, sessionId));

@@ -1,16 +1,20 @@
-import type { JsonSchema, ToolDefinition } from '../tools/types.js';
+import { createHash } from 'node:crypto';
+import type { JsonSchema, ToolDefinition, ToolRiskCategory } from '../tools/types.js';
 
 export interface McpTransport {
   request(method: string, params?: unknown): Promise<unknown>;
   close?(): Promise<void>;
-  diagnostics?(): { stderrTail?: string; pid?: number; closed?: boolean; exited?: boolean };
+  diagnostics?(): { stderrTail?: string; pid?: number; closed?: boolean; exited?: boolean; error?: string };
 }
+
+export type McpRisk = 'readonly' | 'workspace_mutation' | 'external_side_effect' | 'unknown';
 
 export interface McpTool {
   name: string;
   description?: string;
   inputSchema?: JsonSchema;
-  risk?: 'read' | 'write' | 'external';
+  risk?: McpRisk | 'read' | 'write' | 'external';
+  readonly?: boolean;
   timeoutMs?: number;
 }
 
@@ -20,6 +24,51 @@ export interface McpServer {
   tools: McpTool[];
   connectedAt: string;
   activeCalls: number;
+  protocolVersion?: string;
+  version?: string;
+  restartCount: number;
+}
+
+export interface McpConfiguredServer {
+  name: string;
+  command: string;
+  cwd?: string;
+  enabled: boolean;
+  reason?: string;
+}
+
+export interface McpCatalogEntry {
+  qualifiedName: string;
+  server: string;
+  name: string;
+  description: string;
+  risk: McpRisk;
+  schema: JsonSchema;
+}
+
+export interface McpReloadState {
+  status: 'idle' | 'scheduled' | 'applied' | 'failed';
+  requested: boolean;
+  changed: boolean;
+  changes: McpToolChange[];
+  at?: string;
+  error?: string;
+}
+
+export interface McpStatus {
+  configured: McpConfiguredServer[];
+  servers: McpServerStatus[];
+  toolCatalog: McpCatalogEntry[];
+  catalogHash: string;
+  reload: McpReloadState;
+}
+
+export function emptyMcpStatus(configured: McpConfiguredServer[] = [], reload: McpReloadState = { status: 'idle', requested: false, changed: false, changes: [] }): McpStatus {
+  return { configured, servers: [], toolCatalog: [], catalogHash: catalogHash([]), reload };
+}
+
+export function configuredMcpStatus(servers: Array<{ name: string; command: string; cwd?: string }>, trusted: boolean, reload: McpReloadState = { status: 'idle', requested: false, changed: false, changes: [] }): McpStatus {
+  return emptyMcpStatus(servers.map((server) => ({ name: server.name, command: server.command, ...(server.cwd ? { cwd: server.cwd } : {}), enabled: trusted, ...(trusted ? {} : { reason: 'workspace_untrusted' }) })), reload);
 }
 
 export interface McpToolChange {
@@ -40,6 +89,10 @@ export interface McpServerStatus {
   toolCount: number;
   activeCalls: number;
   connectedAt: string;
+  protocolVersion?: string;
+  version?: string;
+  restartCount?: number;
+  error?: string;
   stderrTail?: string;
   pid?: number;
 }
@@ -64,17 +117,22 @@ export function safeMcpName(value: string): string {
 
 export class McpManager {
   private readonly servers = new Map<string, McpServer>();
+  private readonly failures = new Map<string, { error: string; restartCount: number; connectedAt: string }>();
+  private reloadState: McpReloadState = { status: 'idle', requested: false, changed: false, changes: [] };
   constructor(private readonly defaultTimeoutMs = 30_000) {}
 
   async connect(name: string, transport: McpTransport): Promise<McpServer> {
     const serverName = safeMcpName(name);
     const previous = this.servers.get(serverName);
     if (previous?.activeCalls) throw new McpError('mcp_connect_active', `MCP server cannot be replaced while ${previous.activeCalls} call(s) are active.`);
-    const candidate = await this.discover(serverName, transport);
+    let candidate: McpServer;
     try {
+      candidate = await this.discover(serverName, transport);
       this.validateCandidate(candidate);
     } catch (error) {
-      await candidate.transport.close?.();
+      if (previous) this.failures.delete(serverName);
+      else this.recordFailure(serverName, error);
+      await transport.close?.().catch(() => undefined);
       throw error;
     }
     if (previous) {
@@ -85,8 +143,20 @@ export class McpManager {
         throw new McpError('mcp_connect_close_failed', `Could not close the previous MCP server: ${messageOf(error)}`);
       }
     }
+    candidate.restartCount = previous?.restartCount ?? this.failures.get(serverName)?.restartCount ?? 0;
+    this.failures.delete(serverName);
     this.servers.set(serverName, candidate);
     return candidate;
+  }
+
+  async restart(name: string, transport: McpTransport): Promise<McpServer> {
+    const serverName = safeMcpName(name);
+    const current = this.servers.get(serverName);
+    if (current?.activeCalls) throw new McpError('mcp_restart_active', `MCP server cannot restart while ${current.activeCalls} call(s) are active.`);
+    const restartCount = (current?.restartCount ?? this.failures.get(serverName)?.restartCount ?? 0) + 1;
+    const server = await this.connect(serverName, transport);
+    server.restartCount = restartCount;
+    return server;
   }
 
   async reload(name: string, transport: McpTransport): Promise<McpReloadReport> {
@@ -100,6 +170,7 @@ export class McpManager {
       candidate = await this.discover(serverName, transport);
       this.validateCandidate(candidate);
     } catch (error) {
+      this.reloadState = { status: 'failed', requested: true, changed: false, changes: [], at: new Date().toISOString(), error: messageOf(error) };
       await transport.close?.().catch(() => undefined);
       throw error;
     }
@@ -109,9 +180,12 @@ export class McpManager {
       await candidate.transport.close?.().catch(() => undefined);
       throw new McpError('mcp_reload_close_failed', `Could not close the previous MCP server: ${messageOf(error)}`);
     }
+    candidate.restartCount = previous.restartCount;
+    this.failures.delete(serverName);
     this.servers.set(serverName, candidate);
     const after = this.toolSnapshot();
     const changes = diffSnapshots(before, after);
+    this.reloadState = { status: 'applied', requested: true, changed: changes.length > 0, changes, at: new Date().toISOString() };
     return { server: serverName, changed: changes.length > 0, changes, toolCount: candidate.tools.length };
   }
 
@@ -119,6 +193,7 @@ export class McpManager {
     const serverName = safeMcpName(name);
     const server = this.servers.get(serverName);
     this.servers.delete(serverName);
+    this.failures.delete(serverName);
     await server?.transport.close?.();
   }
 
@@ -129,14 +204,52 @@ export class McpManager {
   }
 
   serversStatus(): McpServerStatus[] {
-    return [...this.servers.values()].map((server) => ({
-      name: server.name,
-      state: server.transport.diagnostics?.().closed ? 'closed' : server.transport.diagnostics?.().exited ? 'failed' : 'connected',
-      toolCount: server.tools.length,
-      activeCalls: server.activeCalls,
-      connectedAt: server.connectedAt,
-      ...server.transport.diagnostics?.(),
-    }));
+    const connected = [...this.servers.values()].map((server) => {
+      const diagnostics = server.transport.diagnostics?.();
+      return {
+        name: server.name,
+        state: diagnostics?.closed ? 'closed' as const : diagnostics?.exited ? 'failed' as const : 'connected' as const,
+        toolCount: server.tools.length,
+        activeCalls: server.activeCalls,
+        connectedAt: server.connectedAt,
+        ...(server.protocolVersion ? { protocolVersion: server.protocolVersion } : {}),
+        ...(server.version ? { version: server.version } : {}),
+        restartCount: server.restartCount,
+        ...diagnostics,
+      };
+    });
+    const failed = [...this.failures.entries()].map(([name, failure]) => ({ name, state: 'failed' as const, toolCount: 0, activeCalls: 0, connectedAt: failure.connectedAt, restartCount: failure.restartCount, error: failure.error }));
+    return [...connected, ...failed];
+  }
+
+  requestReload(): void {
+    this.reloadState = { status: 'scheduled', requested: true, changed: false, changes: [], at: new Date().toISOString() };
+  }
+
+  markReloadApplied(changes: McpToolChange[] = []): void {
+    this.reloadState = { status: 'applied', requested: true, changed: changes.length > 0, changes, at: new Date().toISOString() };
+  }
+
+  markReloadFailed(error: unknown): void {
+    this.reloadState = { status: 'failed', requested: true, changed: false, changes: [], at: new Date().toISOString(), error: messageOf(error) };
+  }
+
+  status(configured: McpConfiguredServer[] = [], reload: McpReloadState = this.reloadState): McpStatus {
+    const toolCatalog = this.catalogSnapshot().tools;
+    return { configured, servers: this.serversStatus(), toolCatalog, catalogHash: catalogHash(toolCatalog), reload };
+  }
+
+  health(): McpServerStatus[] {
+    return this.serversStatus();
+  }
+
+  catalogSnapshot(): { version: 1; hash: string; tools: McpCatalogEntry[] } {
+    const tools: McpCatalogEntry[] = [];
+    for (const server of this.servers.values()) for (const tool of server.tools) {
+      const risk = normalizeMcpRisk(tool.risk, tool.readonly);
+      tools.push({ qualifiedName: qualifiedToolName(server.name, tool.name), server: server.name, name: tool.name, description: tool.description ?? '', risk, schema: tool.inputSchema ?? { type: 'object' } });
+    }
+    return { version: 1, hash: catalogHash(tools), tools };
   }
 
   definitions(): ToolDefinition[] {
@@ -148,8 +261,9 @@ export class McpManager {
         name,
         description: tool.description ?? `MCP tool ${tool.name}`,
         parameters: tool.inputSchema ?? { type: 'object' },
-        risk: tool.risk ?? 'external',
-        readonly: tool.risk === 'read',
+        risk: toolRisk(normalizeMcpRisk(tool.risk, tool.readonly)),
+        readonly: normalizeMcpRisk(tool.risk, tool.readonly) === 'readonly',
+        riskCategory: normalizeMcpRisk(tool.risk, tool.readonly) as ToolRiskCategory,
         ...(tool.timeoutMs !== undefined ? { timeoutMs: tool.timeoutMs } : {}),
         handler: async (args, context) => this.call(name, args, { signal: context.signal, timeoutMs: tool.timeoutMs }),
       });
@@ -178,14 +292,23 @@ export class McpManager {
 
   private async discover(name: string, transport: McpTransport): Promise<McpServer> {
     try {
-      await requestWithControl(transport, 'initialize', { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'nju-agent', version: '0.1.0' } }, undefined, this.defaultTimeoutMs, () => transport.close?.());
+      const initialize = await requestWithControl(transport, 'initialize', { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'nju-agent', version: '0.1.0' } }, undefined, this.defaultTimeoutMs, () => transport.close?.()) as { protocolVersion?: unknown; serverInfo?: { version?: unknown } };
       const response = await requestWithControl(transport, 'tools/list', {}, undefined, this.defaultTimeoutMs, () => transport.close?.()) as { tools?: McpTool[] };
       const tools = Array.isArray(response?.tools) ? response.tools.filter((tool) => typeof tool?.name === 'string').map(normalizeMcpTool) : [];
-      return { name, transport, tools, connectedAt: new Date().toISOString(), activeCalls: 0 };
+      return { name, transport, tools, connectedAt: new Date().toISOString(), activeCalls: 0, ...(typeof initialize?.protocolVersion === 'string' ? { protocolVersion: initialize.protocolVersion } : {}), ...(typeof initialize?.serverInfo?.version === 'string' ? { version: initialize.serverInfo.version } : {}), restartCount: 0 };
     } catch (error) {
       await transport.close?.().catch(() => undefined);
       throw error;
     }
+  }
+
+  private recordFailure(serverName: string, error: unknown): void {
+    const previous = this.failures.get(serverName);
+    this.failures.set(serverName, {
+      error: messageOf(error),
+      connectedAt: previous?.connectedAt ?? new Date().toISOString(),
+      restartCount: (previous?.restartCount ?? 0) + 1,
+    });
   }
 
   private validateCandidate(candidate: McpServer): void {
@@ -214,21 +337,37 @@ export class McpManager {
 
   private toolSnapshot(): Map<string, string> {
     const snapshot = new Map<string, string>();
-    for (const server of this.servers.values()) for (const tool of server.tools) snapshot.set(qualifiedToolName(server.name, tool.name), stableJson({ description: tool.description ?? '', risk: tool.risk ?? 'external', schema: tool.inputSchema ?? { type: 'object' } }));
+    for (const server of this.servers.values()) for (const tool of server.tools) snapshot.set(qualifiedToolName(server.name, tool.name), stableJson({ description: tool.description ?? '', risk: normalizeMcpRisk(tool.risk, tool.readonly), schema: tool.inputSchema ?? { type: 'object' } }));
     return snapshot;
   }
 }
 
 function qualifiedToolName(serverName: string, toolName: string): string { return `mcp__${serverName}__${safeMcpName(toolName)}`; }
 
+export function normalizeMcpRisk(value: McpTool['risk'], readonly?: boolean): McpRisk {
+  if (value === 'readonly' || value === 'read') return 'readonly';
+  if (value === 'workspace_mutation' || value === 'write') return 'workspace_mutation';
+  if (value === 'external_side_effect' || value === 'external') return 'external_side_effect';
+  return readonly === true ? 'readonly' : 'unknown';
+}
+
+function toolRisk(risk: McpRisk): 'read' | 'write' | 'external' {
+  return risk === 'readonly' ? 'read' : risk === 'workspace_mutation' ? 'write' : 'external';
+}
+
+export function catalogHash(tools: McpCatalogEntry[]): string {
+  return createHash('sha256').update(stableJson(tools)).digest('hex');
+}
+
 function normalizeMcpTool(value: McpTool): McpTool {
-  const risk = value.risk === 'read' || value.risk === 'write' || value.risk === 'external' ? value.risk : 'external';
+  const risk = normalizeMcpRisk(value.risk, value.readonly);
   const inputSchema = value.inputSchema && typeof value.inputSchema === 'object' && !Array.isArray(value.inputSchema) ? value.inputSchema : { type: 'object' };
   return {
     name: value.name,
     ...(typeof value.description === 'string' ? { description: value.description.slice(0, 2_000) } : {}),
     inputSchema,
     risk,
+    readonly: risk === 'readonly',
     ...(typeof value.timeoutMs === 'number' && Number.isInteger(value.timeoutMs) && value.timeoutMs > 0 ? { timeoutMs: Math.min(value.timeoutMs, 300_000) } : {}),
   };
 }

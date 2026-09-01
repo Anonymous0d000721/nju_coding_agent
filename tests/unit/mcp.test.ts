@@ -114,12 +114,39 @@ describe('McpManager', () => {
     expect(cancelManager.serversStatus()).toEqual([]);
   });
 
+  it('exposes configured, health, catalog, and reload state without replacing the catalog silently', async () => {
+    const manager = new McpManager();
+    await manager.connect('host', transport());
+    const status = manager.status([{ name: 'host', command: 'node', cwd: '.' , enabled: true }]);
+    expect(status).toMatchObject({ configured: [{ name: 'host', enabled: true }], servers: [{ name: 'host', state: 'connected', protocolVersion: '2024-11-05' }], toolCatalog: [{ qualifiedName: 'mcp__host__read_file', risk: 'readonly' }], reload: { status: 'idle' } });
+    expect(status.catalogHash).toMatch(/^[a-f0-9]{64}$/);
+    expect(manager.health()).toEqual(status.servers);
+    manager.requestReload();
+    expect(manager.status().reload).toMatchObject({ status: 'scheduled', requested: true });
+    await manager.reload('host', { request: async (method) => method === 'tools/list' ? { tools: [{ name: 'new_tool', risk: 'external_side_effect' }] } : { protocolVersion: '2024-11-05' } });
+    expect(manager.status().reload).toMatchObject({ status: 'applied', changed: true });
+    expect(manager.definitions().map((tool) => tool.name)).toEqual(['mcp__host__new_tool']);
+  });
+
+  it('isolates failed servers and tracks restart health independently', async () => {
+    const manager = new McpManager();
+    await expect(manager.connect('broken', { request: async () => { throw new Error('broken server'); }, close: async () => undefined })).rejects.toThrow('broken server');
+    await manager.connect('healthy', transport());
+    expect(manager.health()).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: 'broken', state: 'failed', error: 'broken server' }),
+      expect.objectContaining({ name: 'healthy', state: 'connected' }),
+    ]));
+    await manager.restart('healthy', transport());
+    expect(manager.health()).toEqual(expect.arrayContaining([expect.objectContaining({ name: 'healthy', state: 'connected', restartCount: 1 })]));
+  });
+
   it('registers discovered tools through the host registry boundary', async () => {
     const manager = new McpManager();
     await manager.connect('host', transport());
     const registry = new ToolRegistry();
     expect(registerMcpTools(manager, registry)).toBe(1);
     expect(registry.get('mcp__host__read_file')?.risk).toBe('read');
+    expect(registry.get('mcp__host__read_file')?.riskCategory).toBe('readonly');
   });
 });
 
