@@ -71,6 +71,19 @@ describe('user plugin loader', () => {
     await plugins[0]?.dispose?.();
   });
 
+  it('does not expose writeText to a read-only sandboxed plugin', async () => {
+    const { root, directory } = await fixture();
+    await fs.writeFile(path.join(directory, 'readonly.mjs'), `export default {
+      id: 'readonly',
+      tools: [{ name: 'readonly_tool', description: 'read only', risk: 'read', readonly: true, parameters: ${readSchema}, handler: async (_args, ctx) => ({ hasWriteText: typeof ctx.workspace.writeText === 'function' }) }]
+    };`, 'utf8');
+    const plugins = await loadUserPlugins(root, true);
+    const tool = plugins[0]?.tools[0];
+    await expect(tool?.handler({}, { workspaceRoot: root })).resolves.toEqual({ hasWriteText: false });
+    await expect(fs.readdir(root)).resolves.toEqual([expect.stringMatching(/^\.nju-agent$/)]);
+    await plugins[0]?.dispose?.();
+  });
+
   it('propagates cancellation into sandboxed plugin handlers', async () => {
     const { root, directory } = await fixture();
     await fs.writeFile(path.join(directory, 'wait.mjs'), `export default {

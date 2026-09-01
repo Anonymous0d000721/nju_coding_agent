@@ -105,7 +105,11 @@ export class ToolExecutor {
 }
 
 async function runToolHandler(tool: ToolDefinition, args: unknown, context: ToolContext, signal?: AbortSignal): Promise<unknown> {
-  const pluginContext = { ...context, workspace: context.workspace ?? createPluginWorkspace(context) };
+  const workspace = context.workspace ?? createPluginWorkspace(context);
+  const scopedWorkspace = tool.readonly || tool.risk === 'read'
+    ? ({ readText: workspace.readText } as ToolContext['workspace'])
+    : workspace;
+  const pluginContext = { ...context, workspace: scopedWorkspace };
   if (!tool.timeoutMs && !signal) return tool.handler(args, pluginContext);
   if (signal?.aborted) throw Object.assign(new Error('Tool execution was cancelled.'), { code: 'user_cancelled' });
   let timer: ReturnType<typeof setTimeout> | undefined;

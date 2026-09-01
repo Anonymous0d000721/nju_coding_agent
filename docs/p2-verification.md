@@ -6,7 +6,8 @@
 
 - 用户插件体系：`2d90c02`；插件隔离修复：`808546e`
 - MCP 与外部工具生态基础能力：`5ddaa17`
-- MCP runtime reload / 控制面资源清理 follow-up：本次修复提交
+- MCP runtime reload / 控制面资源清理 follow-up：`f418c54`
+- 只读插件 workspace capability 收窄：本次安全修复提交
 - 可观测性与性能基准：`ae9e987`
 - 只读探索子 Agent：`9cad3a7`
 
@@ -17,7 +18,7 @@
 | 命令 | 结果 |
 |---|---|
 | `npm ci` | 通过，重新安装 91 个依赖包 |
-| `npm test -- --run` | 通过，38 个测试文件、195 个测试 |
+| `npm test -- --run` | 通过，38 个测试文件、197 个测试 |
 | `npm run typecheck` | 通过 |
 | `npm run build` | 通过 |
 | `git diff --check` | 通过 |
@@ -49,10 +50,10 @@
 - `git ls-files` 未发现 `node_modules`、`dist`、runtime、日志、视频或压缩包。
 - 构建、示例和 offline 验收产生的根 `dist`、示例 `runtime`、本地日志及依赖目录均为忽略生成物，不进入提交。
 - README 已补充 `NJU_AGENT_MAX_DURATION_MS`（默认 600000，范围 1–1800000）和 `NJU_AGENT_MAX_TOOL_CONCURRENCY`（默认 4，范围 1–8）；CLI help 同步展示两项配置。
-- 用户插件在独立 Node permission 子进程中加载和调用；workspace capability 经 request/response RPC 保留，取消、子进程退出、加载超时和 fail-soft 诊断有回归覆盖；对应提交 `808546e`。
+- 用户插件在独立 Node permission 子进程中加载和调用；workspace capability 经 request/response RPC 保留，取消、子进程退出、加载超时和 fail-soft 诊断有回归覆盖；对应提交 `808546e`。只读或 `read` 工具只获得 `readText`，写入工具才获得 `writeText`；宿主执行层和 sandbox worker 均有对抗性回归测试，防止只读插件绕过 policy 直接修改工作区。
 - MCP 的进程级 `McpRuntime` 在 RPC/TUI 生命周期内复用 `McpManager`；下一次运行通过真实 `McpManager.reload()` 比较工具目录，失败保留旧实例，配置移除会断开旧 server；活动运行不热替换。
 - RPC/TUI `/reload` 的临时插件 sandbox 均在 `finally` 中释放，避免只为计数而遗留 worker。
-- P2 `4.1`、`4.2`、`4.3`、`4.4` 的全部 checkbox 已与源码、测试、文档和独立提交对应。
+- P2 `4.1`、`4.2`、`4.3`、`4.4` 的全部 checkbox 已与源码、测试、文档和独立提交对应；本次只读 capability 修复后全量测试为 38 个测试文件、197 个测试。
 
 ## 已知限制
 

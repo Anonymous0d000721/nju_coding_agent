@@ -58,6 +58,22 @@ describe('plugin workspace capability', () => {
     expect(called).toBe(false);
   });
 
+  it('does not expose write capability to a read-only handler', async () => {
+    const { root } = await createFixture();
+    const registry = new ToolRegistry();
+    registry.register({
+      name: 'plugin_read_only',
+      description: 'read only',
+      parameters: { type: 'object', properties: {}, additionalProperties: false },
+      risk: 'read',
+      readonly: true,
+      handler: (_args, ctx) => ({ hasWriteText: typeof ctx.workspace?.writeText === 'function' }),
+    });
+    const [result] = await new ToolExecutor(registry, { workspaceRoot: root, permissionMode: 'yolo' }).executeBatch([{ id: 'readonly', name: 'plugin_read_only', argumentsJson: '{}' }]);
+    expect(result).toMatchObject({ ok: true, details: { hasWriteText: false } });
+    expect(await fs.readdir(root)).toEqual([]);
+  });
+
   it('forwards cancellation to plugin handlers', async () => {
     const { root } = await createFixture();
     const controller = new AbortController();

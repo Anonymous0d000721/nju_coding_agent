@@ -81,7 +81,9 @@ try {
       if (!tool) throw new Error('Unknown plugin tool');
       const workspace = {
         readText: (path) => workspaceRequest(message.id, 'readText', path),
-        writeText: (path, content, options) => workspaceRequest(message.id, 'writeText', path, content, options),
+        ...(tool.readonly || tool.risk === 'read' ? {} : {
+          writeText: (path, content, options) => workspaceRequest(message.id, 'writeText', path, content, options),
+        }),
       };
       const value = await tool.handler(message.args, { workspace, signal: controller.signal });
       send({ type: 'result', id: message.id, value });
