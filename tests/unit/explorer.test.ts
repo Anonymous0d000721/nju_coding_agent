@@ -2,7 +2,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { EXPLORER_MAX_SUMMARY_CHARS, EXPLORER_MAX_TRACE_CHARS, EXPLORER_MAX_TRACE_EVENTS, ReadOnlyExplorer } from '../../src/agent/explorer.js';
+import { EXPLORER_MAX_FILE_CHARS, EXPLORER_MAX_FILES_CHARS, EXPLORER_MAX_SUMMARY_CHARS, EXPLORER_MAX_TRACE_CHARS, EXPLORER_MAX_TRACE_EVENTS, ReadOnlyExplorer } from '../../src/agent/explorer.js';
 import type { AssistantTurn } from '../../src/agent/types.js';
 import type { ModelClient, ModelRequest } from '../../src/model/model-client.js';
 
@@ -39,8 +39,13 @@ describe('ReadOnlyExplorer', () => {
 
   it('bounds returned summary and trace data from a noisy child run', async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'nju-explorer-'));
-    for (let index = 0; index < 40; index += 1) await fs.writeFile(path.join(root, `note-${index}.txt`), 'hello explorer\n', 'utf8');
-    const turns = Array.from({ length: 40 }, (_, index) => assistant({ id: `turn-${index}`, toolCalls: [{ id: `read-${index}`, name: 'read_file', argumentsJson: JSON.stringify({ path: `note-${index}.txt` }) }], stopReason: 'tool_calls' }));
+    const filePaths: string[] = [];
+    for (let index = 0; index < 100; index += 1) {
+      const file = `note-${index}-${'x'.repeat(90)}.txt`;
+      filePaths.push(file);
+      await fs.writeFile(path.join(root, file), 'hello explorer\n', 'utf8');
+    }
+    const turns = filePaths.map((file, index) => assistant({ id: `turn-${index}`, toolCalls: [{ id: `read-${index}`, name: 'read_file', argumentsJson: JSON.stringify({ path: file }) }], stopReason: 'tool_calls' }));
     turns.push(assistant({ text: 'x'.repeat(EXPLORER_MAX_SUMMARY_CHARS + 1) }));
     const result = await new ReadOnlyExplorer(new ScriptedModel(turns), root).explore('Inspect repeatedly.', { maxDurationMs: 5_000 });
 
@@ -49,6 +54,9 @@ describe('ReadOnlyExplorer', () => {
     expect(result.trace.length).toBeLessThanOrEqual(EXPLORER_MAX_TRACE_EVENTS);
     expect(JSON.stringify(result.trace).length).toBeLessThanOrEqual(EXPLORER_MAX_TRACE_CHARS);
     expect(result.traceTruncated).toBe(true);
+    expect(result.files.every((file) => file.length <= EXPLORER_MAX_FILE_CHARS)).toBe(true);
+    expect(result.files.join('').length).toBeLessThanOrEqual(EXPLORER_MAX_FILES_CHARS);
+    expect(result.filesTruncated).toBe(true);
   });
 
   it('cannot use write or command tools and reports a permission outcome', async () => {

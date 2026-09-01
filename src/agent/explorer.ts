@@ -15,6 +15,8 @@ export const EXPLORER_MAX_SUMMARY_CHARS = 4_000;
 export const EXPLORER_MAX_FINDINGS = 32;
 export const EXPLORER_MAX_FINDING_CHARS = 500;
 export const EXPLORER_MAX_FILES = 128;
+export const EXPLORER_MAX_FILE_CHARS = 256;
+export const EXPLORER_MAX_FILES_CHARS = 8_000;
 export const EXPLORER_MAX_ERRORS = 32;
 export const EXPLORER_MAX_ERROR_CHARS = 500;
 
@@ -45,6 +47,7 @@ export interface ExplorerConclusion {
   trace: ExplorerTraceEvent[];
   traceTruncated?: boolean;
   summaryTruncated?: boolean;
+  filesTruncated?: boolean;
 }
 
 export interface ExplorerOptions {
@@ -131,13 +134,14 @@ export class ReadOnlyExplorer {
         ...toolResults.filter((tool) => !tool.ok).map((tool) => `${tool.toolName}: ${tool.error?.code ?? 'error'}`),
       ])];
       const rawSummary = assistantSummary(result);
+      const boundedFileResult = boundedFiles(filesFrom(toolResults));
       await emit({ type: 'stop', stopReason: result.stopReason });
       return {
         runId,
         status,
         summary: boundedText(rawSummary, EXPLORER_MAX_SUMMARY_CHARS),
         findings: boundedFindings(result, toolResults),
-        files: filesFrom(toolResults).slice(0, EXPLORER_MAX_FILES),
+        files: boundedFileResult.files,
         toolCalls: result.toolCalls,
         elapsedMs: result.elapsedMs ?? Date.now() - started,
         stopReason: result.stopReason,
@@ -145,6 +149,7 @@ export class ReadOnlyExplorer {
         trace,
         ...(traceTruncated ? { traceTruncated: true } : {}),
         ...(rawSummary.length > EXPLORER_MAX_SUMMARY_CHARS ? { summaryTruncated: true } : {}),
+        ...(boundedFileResult.truncated ? { filesTruncated: true } : {}),
       };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -207,6 +212,27 @@ function filesFrom(toolResults: ToolResult[]): string[] {
     const values = [details.path, ...(Array.isArray(details.matches) ? details.matches.map((match) => typeof match === 'object' && match !== null ? (match as Record<string, unknown>).path : undefined) : [])];
     return values.filter((value): value is string => typeof value === 'string' && value.length > 0);
   }))];
+}
+
+function boundedFiles(files: string[]): { files: string[]; truncated: boolean } {
+  const selected = files.slice(0, EXPLORER_MAX_FILES);
+  const bounded: string[] = [];
+  let chars = 0;
+  let truncated = selected.length < files.length;
+  for (const file of selected) {
+    if (file.length > EXPLORER_MAX_FILE_CHARS) truncated = true;
+    const remaining = EXPLORER_MAX_FILES_CHARS - chars;
+    if (remaining <= 0) { truncated = true; break; }
+    const value = file.length <= remaining ? file : file.slice(0, remaining);
+    if (value.length < file.length) truncated = true;
+    bounded.push(value.length <= EXPLORER_MAX_FILE_CHARS ? value : value.slice(0, EXPLORER_MAX_FILE_CHARS));
+    chars += bounded.at(-1)?.length ?? 0;
+    if (chars >= EXPLORER_MAX_FILES_CHARS) {
+      if (file !== selected.at(-1) || files.length > selected.length) truncated = true;
+      break;
+    }
+  }
+  return { files: bounded, truncated };
 }
 
 function boundedText(value: string, maxChars: number): string {
