@@ -8,7 +8,7 @@
 - 子 Agent 的 `ToolExecutor` 固定使用 `strict`，不注册写文件、shell、Git、后台任务、插件或 MCP 工具；越界调用会得到 `unknown_tool`，并在结论中标为 `permission_denied`。
 - 每次探索有独立 `runId`、固定 workspace root 和可配置 wall-clock deadline。父级 `AbortSignal` 会取消模型和工具等待；deadline 结束时返回 `timed_out`，而不是伪装成完成。
 - 模型异常返回 `failed`，父级取消返回 `cancelled`，权限拒绝返回 `permission_denied`，正常无工具回答返回 `completed`。
-- 返回值只包含 `summary`、`findings`、`files`、计数、错误和有界 trace；父 Agent 不接收完整子会话历史。
+- 返回值只包含 `summary`、`findings`、`files`、计数、错误和有界 trace；父 Agent 不接收完整子会话历史。`summary` 最多 4000 字符，trace 最多 64 个事件且序列化后最多 16000 字符，findings/errors/files 也有数量和单项长度上限；超限时保留截断标记，不把完整探索记录回传。
 
 ## 审计
 

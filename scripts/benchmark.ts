@@ -88,16 +88,24 @@ try {
     await fs.mkdir(pluginDirectory, { recursive: true });
     await fs.writeFile(path.join(pluginDirectory, `plugin-${index}.mjs`), `export default { id: 'benchmark-${index}', tools: [{ name: 'read_${index}', description: 'benchmark', risk: 'read', readonly: true, parameters: { type: 'object', additionalProperties: false }, handler: () => 'ok' }] };\n`, 'utf8');
   }
+  await fs.writeFile(path.join(path.join(workspace, '.nju-agent', 'plugins'), 'broken.mjs'), 'throw new Error("benchmark broken plugin");', 'utf8');
   const pluginStart = performance.now();
   plugins = await loadUserPluginReport(workspace, true);
-  metrics.pluginLoad = metric(performance.now() - pluginStart, 'ms', `${plugins.loaded.length} plugins`);
+  metrics.pluginLoad = metric(performance.now() - pluginStart, 'ms', `${plugins.loaded.length} good plugins plus one broken plugin`);
   metrics.pluginCount = metric(plugins.loaded.length, 'plugins');
+  const pluginIsolation = plugins.loaded.length === 12
+    && plugins.diagnostics.some((diagnostic) => diagnostic.code === 'load_failed')
+    && await plugins.loaded[0]!.tools[0]!.handler({}, { workspaceRoot: workspace }) === 'ok';
 
   const manager = new McpManager(1_000);
   const mcpStart = performance.now();
+  await expectMcpFailure(manager);
   for (let index = 0; index < 10; index += 1) await manager.connect(`server-${index}`, mockTransport(index));
-  metrics.mcpConnect = metric(performance.now() - mcpStart, 'ms', '10 independent mock stdio-equivalent transports');
-  metrics.mcpServerCount = metric(manager.serversStatus().length, 'servers');
+  const mcpStatuses = manager.serversStatus();
+  metrics.mcpConnect = metric(performance.now() - mcpStart, 'ms', '10 healthy transports alongside one failed transport');
+  metrics.mcpServerCount = metric(mcpStatuses.filter((server) => server.state === 'connected').length, 'servers');
+  const mcpIsolation = mcpStatuses.some((server) => server.name === 'broken' && server.state === 'failed')
+    && mcpStatuses.filter((server) => server.state === 'connected').length === 10;
   await manager.disconnectAll();
 
   await telemetry.append({ type: 'benchmark', sessionId: 'benchmark-session', runId: 'benchmark-run', data: { toolCallId: 'benchmark-call', output: 'benchmark-secret' } });
@@ -111,7 +119,7 @@ try {
     node: process.version,
     platform: `${process.platform}/${process.arch}`,
     metrics,
-    checks: { largeOutputBounded: largeResult.content.length <= 12_100, telemetryQueryable: queried.length === 1 && queried[0]?.schemaVersion === 1, pluginIsolation: plugins.diagnostics.length === 0 && plugins.loaded.length === 12, mcpIsolation: metrics.mcpServerCount.value === 10 },
+    checks: { largeOutputBounded: largeResult.content.length <= 12_100, telemetryQueryable: queried.length === 1 && queried[0]?.schemaVersion === 1, pluginIsolation, mcpIsolation },
   };
   const artifact = path.join(workspace, 'benchmark.json');
   await fs.writeFile(artifact, `${JSON.stringify(report, null, 2)}\n`, 'utf8');
@@ -126,6 +134,9 @@ try {
 
 function tool(name: string, handler: ToolDefinition['handler']): ToolDefinition {
   return { name, description: name, parameters: { type: 'object', additionalProperties: false }, risk: 'read', readonly: true, handler };
+}
+async function expectMcpFailure(manager: McpManager): Promise<void> {
+  await manager.connect('broken', { request: async () => { throw new Error('benchmark broken MCP'); }, close: async () => undefined }).catch(() => undefined);
 }
 function mockTransport(index: number): McpTransport {
   return { request: async (method) => method === 'initialize' ? { protocolVersion: '2024-11-05', serverInfo: { version: `1.0.${index}` } } : { tools: [{ name: `read_${index}`, description: 'benchmark', risk: 'read', inputSchema: { type: 'object' } }] } };

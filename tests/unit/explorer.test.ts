@@ -2,7 +2,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { ReadOnlyExplorer } from '../../src/agent/explorer.js';
+import { EXPLORER_MAX_SUMMARY_CHARS, EXPLORER_MAX_TRACE_CHARS, EXPLORER_MAX_TRACE_EVENTS, ReadOnlyExplorer } from '../../src/agent/explorer.js';
 import type { AssistantTurn } from '../../src/agent/types.js';
 import type { ModelClient, ModelRequest } from '../../src/model/model-client.js';
 
@@ -35,6 +35,20 @@ describe('ReadOnlyExplorer', () => {
     expect(result.summary).toContain('expected greeting');
     expect(result.trace.map((event) => event.type)).toContain('tool_result');
     expect(result.trace.every((event) => event.runId === result.runId)).toBe(true);
+  });
+
+  it('bounds returned summary and trace data from a noisy child run', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'nju-explorer-'));
+    for (let index = 0; index < 40; index += 1) await fs.writeFile(path.join(root, `note-${index}.txt`), 'hello explorer\n', 'utf8');
+    const turns = Array.from({ length: 40 }, (_, index) => assistant({ id: `turn-${index}`, toolCalls: [{ id: `read-${index}`, name: 'read_file', argumentsJson: JSON.stringify({ path: `note-${index}.txt` }) }], stopReason: 'tool_calls' }));
+    turns.push(assistant({ text: 'x'.repeat(EXPLORER_MAX_SUMMARY_CHARS + 1) }));
+    const result = await new ReadOnlyExplorer(new ScriptedModel(turns), root).explore('Inspect repeatedly.', { maxDurationMs: 5_000 });
+
+    expect(result.summary.length).toBeLessThanOrEqual(EXPLORER_MAX_SUMMARY_CHARS);
+    expect(result.summaryTruncated).toBe(true);
+    expect(result.trace.length).toBeLessThanOrEqual(EXPLORER_MAX_TRACE_EVENTS);
+    expect(JSON.stringify(result.trace).length).toBeLessThanOrEqual(EXPLORER_MAX_TRACE_CHARS);
+    expect(result.traceTruncated).toBe(true);
   });
 
   it('cannot use write or command tools and reports a permission outcome', async () => {

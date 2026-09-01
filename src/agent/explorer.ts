@@ -9,6 +9,14 @@ import type { ToolDefinition, ToolResult } from '../tools/types.js';
 
 const READ_ONLY_TOOLS = new Set(['list_files', 'read_file', 'glob_files', 'grep_files']);
 const DEFAULT_MAX_DURATION_MS = 30_000;
+export const EXPLORER_MAX_TRACE_EVENTS = 64;
+export const EXPLORER_MAX_TRACE_CHARS = 16_000;
+export const EXPLORER_MAX_SUMMARY_CHARS = 4_000;
+export const EXPLORER_MAX_FINDINGS = 32;
+export const EXPLORER_MAX_FINDING_CHARS = 500;
+export const EXPLORER_MAX_FILES = 128;
+export const EXPLORER_MAX_ERRORS = 32;
+export const EXPLORER_MAX_ERROR_CHARS = 500;
 
 export type ExplorerStatus = 'completed' | 'cancelled' | 'timed_out' | 'failed' | 'permission_denied';
 
@@ -35,6 +43,8 @@ export interface ExplorerConclusion {
   stopReason?: AgentRunResult['stopReason'];
   errors: string[];
   trace: ExplorerTraceEvent[];
+  traceTruncated?: boolean;
+  summaryTruncated?: boolean;
 }
 
 export interface ExplorerOptions {
@@ -68,9 +78,14 @@ export class ReadOnlyExplorer {
     const runId = options.runId ?? `explorer-${randomUUID()}`;
     const started = Date.now();
     const trace: ExplorerTraceEvent[] = [];
+    let traceTruncated = false;
     const emit = async (event: Omit<ExplorerTraceEvent, 'timestamp' | 'runId'>): Promise<void> => {
       const complete = { ...event, timestamp: new Date().toISOString(), runId } satisfies ExplorerTraceEvent;
       trace.push(complete);
+      while (trace.length > EXPLORER_MAX_TRACE_EVENTS || JSON.stringify(trace).length > EXPLORER_MAX_TRACE_CHARS) {
+        trace.shift();
+        traceTruncated = true;
+      }
       await options.onTrace?.(complete);
     };
     await emit({ type: 'start' });
@@ -115,18 +130,21 @@ export class ReadOnlyExplorer {
         ...(result.errors ?? []),
         ...toolResults.filter((tool) => !tool.ok).map((tool) => `${tool.toolName}: ${tool.error?.code ?? 'error'}`),
       ])];
+      const rawSummary = assistantSummary(result);
       await emit({ type: 'stop', stopReason: result.stopReason });
       return {
         runId,
         status,
-        summary: assistantSummary(result),
-        findings: findingsFrom(result, toolResults),
-        files: filesFrom(toolResults),
+        summary: boundedText(rawSummary, EXPLORER_MAX_SUMMARY_CHARS),
+        findings: boundedFindings(result, toolResults),
+        files: filesFrom(toolResults).slice(0, EXPLORER_MAX_FILES),
         toolCalls: result.toolCalls,
         elapsedMs: result.elapsedMs ?? Date.now() - started,
         stopReason: result.stopReason,
-        errors,
+        errors: errors.slice(0, EXPLORER_MAX_ERRORS).map((error) => error.slice(0, EXPLORER_MAX_ERROR_CHARS)),
         trace,
+        ...(traceTruncated ? { traceTruncated: true } : {}),
+        ...(rawSummary.length > EXPLORER_MAX_SUMMARY_CHARS ? { summaryTruncated: true } : {}),
       };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -141,8 +159,9 @@ export class ReadOnlyExplorer {
         toolCalls: 0,
         elapsedMs: Date.now() - started,
         stopReason: 'fatal_error',
-        errors: [message],
+        errors: [message.slice(0, EXPLORER_MAX_ERROR_CHARS)],
         trace,
+        ...(traceTruncated ? { traceTruncated: true } : {}),
       };
     }
   }
@@ -162,8 +181,16 @@ function assistantSummary(result: AgentRunResult): string {
     .at(-1)?.content.trim() ?? '';
 }
 
+function boundedSummary(result: AgentRunResult): string {
+  return boundedText(assistantSummary(result), EXPLORER_MAX_SUMMARY_CHARS);
+}
+
+function boundedFindings(result: AgentRunResult, toolResults: ToolResult[]): string[] {
+  return findingsFrom(result, toolResults).slice(0, EXPLORER_MAX_FINDINGS).map((finding) => boundedText(finding, EXPLORER_MAX_FINDING_CHARS));
+}
+
 function findingsFrom(result: AgentRunResult, toolResults: ToolResult[]): string[] {
-  const summary = assistantSummary(result);
+  const summary = boundedSummary(result);
   const toolFindings = toolResults.filter((tool) => tool.ok && typeof tool.details === 'object' && tool.details !== null)
     .flatMap((tool) => {
       const details = tool.details as Record<string, unknown>;
@@ -180,4 +207,10 @@ function filesFrom(toolResults: ToolResult[]): string[] {
     const values = [details.path, ...(Array.isArray(details.matches) ? details.matches.map((match) => typeof match === 'object' && match !== null ? (match as Record<string, unknown>).path : undefined) : [])];
     return values.filter((value): value is string => typeof value === 'string' && value.length > 0);
   }))];
+}
+
+function boundedText(value: string, maxChars: number): string {
+  const marker = '\n[explorer output truncated]';
+  if (value.length <= maxChars) return value;
+  return `${value.slice(0, Math.max(0, maxChars - marker.length))}${marker}`;
 }
