@@ -47,8 +47,14 @@ export interface ToolApprovalContext {
 export type ToolApprovalInput = Omit<ApprovalRequest, 'requestId' | 'clientId' | 'timeoutMs'> & { timeoutMs?: number };
 export type ToolApprovalHandler = (tool: ToolDefinition, decision: PolicyDecision, args: unknown, request: ToolApprovalInput, context: ToolApprovalContext) => Promise<ApprovalResolution | boolean>;
 
+export interface WorkspaceCapabilities {
+  readText(relativePath: string): Promise<string>;
+  writeText(relativePath: string, content: string, options?: { createDirectories?: boolean }): Promise<{ relativePath: string; bytes: number; beforeHash?: string; afterHash: string }>;
+}
+
 export interface ToolContext {
   workspaceRoot: string;
+  workspace?: WorkspaceCapabilities;
   signal?: AbortSignal;
   runId?: string;
   permissionMode?: PermissionMode;

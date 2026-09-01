@@ -14,6 +14,10 @@ export class ToolRegistry {
     return this.tools.get(name);
   }
 
+  has(name: string): boolean {
+    return this.tools.has(name);
+  }
+
   definitionsForModel(): ToolDefinitionForModel[] {
     return [...this.tools.values()].map((tool) => ({
       type: 'function',

@@ -31,7 +31,7 @@ import { withRetryingModelClient } from '../model/retry.js';
 import { McpManager } from '../mcp/client.js';
 import { createStdioTransport } from '../mcp/stdio.js';
 import { registerMcpTools } from '../mcp/registry-adapter.js';
-import { loadUserPlugins, pluginTools } from '../plugins/loader.js';
+import { loadUserPluginReport } from '../plugins/loader.js';
 import { resolveWorkspacePath } from '../tools/path-guard.js';
 import { runRpc } from './rpc.js';
 import type { AgentMessage, AgentRunControl, AgentRunProgress, AgentRunResult, AgentStreamEvent } from '../agent/types.js';
@@ -85,10 +85,19 @@ export async function runPrompt(config: AgentConfig, prompt: string, sessionId?:
   for (const tool of createGitTools()) registry.register(tool);
   for (const tool of createBackgroundTools(getBackgroundCommandManager(config.workspaceRoot))) registry.register(tool);
   for (const tool of createTodoTools(`${config.workspaceRoot}/.nju-agent/todo.json`)) registry.register(tool);
-  const userPlugins = await loadUserPlugins(config.workspaceRoot, config.projectTrusted, reloadPlugins);
-  for (const tool of pluginTools(userPlugins)) registry.register(tool);
+  const pluginReport = await loadUserPluginReport(config.workspaceRoot, config.projectTrusted, reloadPlugins);
+  for (const plugin of pluginReport.loaded) {
+    const conflictingTool = plugin.tools.find((tool) => registry.has(tool.name));
+    if (conflictingTool) {
+      pluginReport.diagnostics.push({ code: 'tool_name_conflict', source: plugin.source, pluginId: plugin.id, message: `Plugin '${plugin.id}' tool '${conflictingTool.name}' conflicts with a host tool.`, recoverable: true });
+      continue;
+    }
+    for (const tool of plugin.tools) registry.register(tool);
+  }
   const sessionStore = config.session.enabled ? new JsonlSessionStore(`${config.workspaceRoot}/.nju-agent`) : undefined;
   const telemetry = new TelemetryStore(`${config.workspaceRoot}/.nju-agent/logs/events.jsonl`, config.telemetry, config.model.apiKey ? [config.model.apiKey] : []);
+  for (const diagnostic of pluginReport.diagnostics) await telemetry.append({ type: 'plugin_load_diagnostic', sessionId, data: { ...diagnostic } });
+  for (const notice of pluginReport.trustNotices) await telemetry.append({ type: 'plugin_trust_notice', sessionId, data: { ...notice } });
   const runId = randomUUID();
   const recordMcpEvent = (type: 'mcp_connect' | 'mcp_disconnect', data: Record<string, unknown>) => telemetry.append({ type, sessionId: sessionStore ? sessionId : undefined, runId, data });
   const mcp = new McpManager(config.mcpTimeoutMs);

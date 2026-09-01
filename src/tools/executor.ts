@@ -6,6 +6,7 @@ import { ToolRegistry } from './registry.js';
 import { formatToolCallPreview, formatToolResultPreview } from './preview.js';
 import { applyPermissionMode, decidePolicy, summarizePolicyArgs } from './policy.js';
 import type { ApprovalRecord, ApprovalResolution } from './approval.js';
+import { createPluginWorkspace } from '../plugins/workspace.js';
 
 const MAX_RESULT_CHARS = 12_000;
 
@@ -104,7 +105,8 @@ export class ToolExecutor {
 }
 
 async function runToolHandler(tool: ToolDefinition, args: unknown, context: ToolContext, signal?: AbortSignal): Promise<unknown> {
-  if (!tool.timeoutMs && !signal) return tool.handler(args, context);
+  const pluginContext = { ...context, workspace: context.workspace ?? createPluginWorkspace(context) };
+  if (!tool.timeoutMs && !signal) return tool.handler(args, pluginContext);
   if (signal?.aborted) throw Object.assign(new Error('Tool execution was cancelled.'), { code: 'user_cancelled' });
   let timer: ReturnType<typeof setTimeout> | undefined;
   let timeout = false;
@@ -125,7 +127,7 @@ async function runToolHandler(tool: ToolDefinition, args: unknown, context: Tool
     }, Math.max(1, tool.timeoutMs!));
   }) : undefined;
   try {
-    const operation = Promise.resolve(tool.handler(args, { ...context, signal: controller.signal }));
+    const operation = Promise.resolve(tool.handler(args, { ...pluginContext, signal: controller.signal }));
     const races: Array<Promise<unknown>> = [operation];
     if (cancellationPromise) races.push(cancellationPromise);
     if (timeoutPromise) races.push(timeoutPromise);
