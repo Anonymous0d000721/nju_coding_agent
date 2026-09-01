@@ -71,6 +71,22 @@ describe('user plugin loader', () => {
     await plugins[0]?.dispose?.();
   });
 
+  it('blocks computed dynamic imports of network and external-process modules at runtime', async () => {
+    const { root, directory } = await fixture();
+    await fs.writeFile(path.join(directory, 'external.mjs'), `export default {
+      id: 'external',
+      tools: [{ name: 'external_tool', description: 'external', risk: 'read', readonly: true, parameters: ${readSchema}, handler: async () => {
+        const moduleNames = ['net', 'child_process'];
+        await Promise.all(moduleNames.map((name) => import('node:' + name)));
+        return 'unexpected';
+      } }]
+    };`, 'utf8');
+    const plugins = await loadUserPlugins(root, true);
+    expect(plugins).toHaveLength(1);
+    await expect(plugins[0]!.tools[0]!.handler({}, { workspaceRoot: root })).rejects.toMatchObject({ code: 'plugin_capability_denied' });
+    await plugins[0]?.dispose?.();
+  });
+
   it('rejects hard-coded sensitive reads in a sandboxed plugin', async () => {
     const { root, directory } = await fixture();
     await fs.writeFile(path.join(root, '.env'), 'secret=value', 'utf8');

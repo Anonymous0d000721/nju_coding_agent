@@ -24,8 +24,9 @@ const FORBIDDEN_PLUGIN_CAPABILITIES: Array<{ pattern: RegExp; name: string }> = 
 ];
 const LOAD_TIMEOUT_MS = 5_000;
 const SANDBOX_WORKER_SOURCE = String.raw`
+import { readFile } from 'node:fs/promises';
 import { createInterface } from 'node:readline';
-import { pathToFileURL } from 'node:url';
+import { SourceTextModule, createContext } from 'node:vm';
 
 const pluginFile = process.argv[1];
 const tools = [];
@@ -37,8 +38,17 @@ const send = (message) => process.stdout.write(JSON.stringify(message) + '\n');
 const errorOf = (error) => ({ message: error instanceof Error ? error.message : String(error), ...(typeof error?.code === 'string' ? { code: error.code } : {}) });
 
 try {
-  const module = await import(pathToFileURL(pluginFile).href + '?sandbox=' + Date.now() + '-' + Math.random());
-  const candidate = module.default ?? module.plugin;
+  const source = await readFile(pluginFile, 'utf8');
+  const context = createContext(Object.create(null), { codeGeneration: { strings: false, wasm: false } });
+  const module = new SourceTextModule(source, {
+    context,
+    identifier: pluginFile,
+    initializeImportMeta(meta) { meta.url = 'file://' + pluginFile; },
+    importModuleDynamically() { throw Object.assign(new Error('Plugin imports are denied; use host-mediated APIs instead.'), { code: 'plugin_capability_denied' }); },
+  });
+  await module.link(() => { throw Object.assign(new Error('Plugin imports are denied; use host-mediated APIs instead.'), { code: 'plugin_capability_denied' }); });
+  await module.evaluate();
+  const candidate = module.namespace.default ?? module.namespace.plugin;
   const plugin = typeof candidate === 'function' ? await candidate() : candidate;
   if (!plugin || typeof plugin !== 'object' || !Array.isArray(plugin.tools)) throw new Error('Plugin export must contain a tools array');
   for (const tool of plugin.tools) {
@@ -284,7 +294,7 @@ class SandboxPluginClient {
   }
 
   static async open(pluginFile: string, reload: boolean): Promise<SandboxPluginClient> {
-    const args = ['--permission', '--disallow-code-generation-from-strings', `--allow-fs-read=${pluginFile}`, '--eval', SANDBOX_WORKER_SOURCE, pluginFile, reload ? `reload=${Date.now()}-${Math.random()}` : ''];
+    const args = ['--permission', '--experimental-vm-modules', '--disallow-code-generation-from-strings', `--allow-fs-read=${pluginFile}`, '--eval', SANDBOX_WORKER_SOURCE, pluginFile, reload ? `reload=${Date.now()}-${Math.random()}` : ''];
     const child = spawn(process.execPath, args, { cwd: path.dirname(pluginFile), env: sandboxEnvironment(), shell: false, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
     const client = new SandboxPluginClient(child);
     try {
